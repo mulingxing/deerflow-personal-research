@@ -11,6 +11,10 @@
 | 本机聊天历史 | 将研究快照保存到 SQLite，支持打开旧会话，并检测不同标签页的保存冲突。 | [`src/server/history.py`](src/server/history.py)、[`web/src/app/chat/components/history-sidebar.tsx`](web/src/app/chat/components/history-sidebar.tsx)、[使用说明](docs/STAGE3_HISTORY.md) |
 | PPT 导出 | 将报告或笔记生成 `.pptx`，提供 5 种主题预览、长内容拆页和渲染后溢出检查。 | [`src/ppt/service.py`](src/ppt/service.py)、[`web/src/app/ppt/page.tsx`](web/src/app/ppt/page.tsx)、[使用说明](docs/STAGE4_PPT.md) |
 
+本版本新增的 PPT 主题预览示例：
+
+![PPT midnight 主题预览](web/public/ppt-themes/midnight.png)
+
 当前版本面向**本机单用户**。历史 API 尚无登录和用户隔离，不应直接开放给不可信网络。使用云端大模型回答资料问题时，选中的资料片段仍会发送给模型服务。导出的 PPT 页面通常是图像，无法在 PowerPoint 中逐项编辑文字。
 
 ### 从本仓库复现

@@ -11,6 +11,10 @@
 | Local conversation history | Save research snapshots in SQLite, reopen completed conversations, and detect conflicting updates from another tab. | [`src/server/history.py`](src/server/history.py), [`web/src/app/chat/components/history-sidebar.tsx`](web/src/app/chat/components/history-sidebar.tsx), [guide](docs/STAGE3_HISTORY.md) |
 | Presentation export | Turn report text or notes into a downloadable PPTX with five theme previews, slide splitting, and rendered overflow checks. | [`src/ppt/service.py`](src/ppt/service.py), [`web/src/app/ppt/page.tsx`](web/src/app/ppt/page.tsx), [guide](docs/STAGE4_PPT.md) |
 
+Preview of a presentation theme added in this version:
+
+![Midnight presentation theme preview](web/public/ppt-themes/midnight.png)
+
 This adaptation is intended for **local, single-user use**. Its history API does not authenticate users; do not expose it to an untrusted network. A cloud LLM still receives selected document excerpts when answering document questions. The PPTX export renders slide pages as images, so individual text boxes are generally not editable.
 
 ### Reproduce this version
