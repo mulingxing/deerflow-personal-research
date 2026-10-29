@@ -16,6 +16,7 @@ export interface Message {
     | "analyst";
   role: MessageRole;
   isStreaming?: boolean;
+  historyIncomplete?: boolean;
   content: string;
   contentChunks: string[];
   reasoningContent?: string;
@@ -45,6 +46,7 @@ export interface Resource {
   uri: string;
   title: string;
   description?: string;
+  filename?: string | null;
 }
 
 export interface Citation {
@@ -56,4 +58,6 @@ export interface Citation {
   relevance_score?: number;
   accessed_at?: string;
   source_type?: string;
+  page_number?: number;
+  section?: string;
 }

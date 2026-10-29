@@ -52,7 +52,8 @@ def extract_citations_from_messages(messages: List[Any]) -> List[Dict[str, Any]]
                     # The query is in the args
                     query = tool_call.get("args", {}).get("query", "")
                     logger.info(
-                        "[Citations] Found web_search tool call with query=%r", query
+                        "[Citations] Found web_search tool call with query length=%d",
+                        len(str(query or "")),
                     )
                     # Note: results come in subsequent ToolMessage
 
@@ -90,9 +91,8 @@ def _extract_from_tool_message(message: ToolMessage) -> List[Dict[str, Any]]:
         else:
             data = content
     except (json.JSONDecodeError, TypeError):
-        logger.debug(
-            f"Could not parse tool message content as JSON: {str(content)[:100]}..."
-        )
+        # 检索结果可能包含私人资料，日志只记录解析失败，不打印原文。
+        logger.debug("Could not parse tool message content as JSON")
         return citations
 
     logger.debug(f"Parsed tool message data type: {type(data).__name__}")
@@ -120,6 +120,9 @@ def _extract_from_tool_message(message: ToolMessage) -> List[Dict[str, Any]]:
             citations.append(citation)
             logger.debug(f"Extracted 1 citation from crawl tool '{tool_name}'")
 
+    elif tool_name_lower == "local_search_tool":
+        citations.extend(_extract_from_local_documents(data))
+
     # Fallback: Try to detect by data structure
     else:
         # Check if it looks like search results (list of items with url)
@@ -141,6 +144,46 @@ def _extract_from_tool_message(message: ToolMessage) -> List[Dict[str, Any]]:
             if citation:
                 citations.append(citation)
 
+    return citations
+
+
+def _extract_from_local_documents(data: Any) -> List[Dict[str, Any]]:
+    """为上传资料生成带页码的引用，避免把它误标成网页搜索结果。"""
+    if not isinstance(data, list):
+        return []
+
+    citations: List[Dict[str, Any]] = []
+    for document in data:
+        if not isinstance(document, dict):
+            continue
+        uri = document.get("url") or f"rag://{document.get('id', '')}"
+        title = document.get("title") or document.get("id") or "上传资料"
+        chunks = document.get("chunks") or [{"content": document.get("content", "")}]
+        for chunk in chunks:
+            if not isinstance(chunk, dict) or not chunk.get("content"):
+                continue
+            page_number = chunk.get("page_number")
+            section = chunk.get("section")
+            location = f"第 {page_number} 页" if page_number else section or ""
+            url = f"{uri}#page={page_number}" if page_number else uri
+            content = str(chunk["content"])
+            citations.append(
+                {
+                    "url": url,
+                    "title": title,
+                    "description": (
+                        f"{location} · {content[:180]}"
+                        if location
+                        else content[:180]
+                    ),
+                    "content_snippet": content[:500],
+                    "relevance_score": chunk.get("similarity", 0.0),
+                    "domain": "",
+                    "source_type": "local_document",
+                    "page_number": page_number,
+                    "section": section,
+                }
+            )
     return citations
 
 

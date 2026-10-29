@@ -36,7 +36,7 @@ export interface MessageInputProps {
   loading?: boolean;
   config?: DeerFlowConfig | null;
   onChange?: (markdown: string) => void;
-  onEnter?: (message: string, resources: Array<Resource>) => void;
+  onEnter?: (message: string, resources: Array<Resource>) => boolean | void;
 }
 
 function formatMessage(content: JSONContent) {
@@ -85,7 +85,8 @@ const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const t = useTranslations("messageInput");
     const editorRef = useRef<Editor>(null);
     const handleEnterRef = useRef<
-      ((message: string, resources: Array<Resource>) => void) | undefined
+      | ((message: string, resources: Array<Resource>) => boolean | void)
+      | undefined
     >(onEnter);
     const debouncedUpdates = useDebouncedCallback(
       async (editor: EditorInstance) => {
@@ -107,7 +108,7 @@ const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           const { text, resources } = formatMessage(
             editorRef.current?.getJSON() ?? [],
           );
-          onEnter(text, resources);
+          if (onEnter(text, resources) === false) return;
         }
         editorRef.current?.commands.clearContent();
       },
@@ -137,7 +138,9 @@ const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         }),
         Placeholder.configure({
           showOnlyCurrent: false,
-          placeholder: config?.rag.provider ? t("placeholderWithRag") : t("placeholder"),
+          placeholder: config?.rag.provider
+            ? t("placeholderWithRag")
+            : t("placeholder"),
           emptyEditorClass: "placeholder",
         }),
         Extension.create({
@@ -145,13 +148,15 @@ const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           addKeyboardShortcuts() {
             return {
               Enter: () => {
+                let accepted = true;
                 if (handleEnterRef.current) {
                   const { text, resources } = formatMessage(
                     this.editor.getJSON() ?? [],
                   );
-                  handleEnterRef.current(text, resources);
+                  accepted = handleEnterRef.current(text, resources) !== false;
                 }
-                return this.editor.commands.clearContent();
+                if (accepted) this.editor.commands.clearContent();
+                return true;
               },
             };
           },

@@ -79,8 +79,7 @@ class TestPPTLocalization:
             "get_prompt_template should be called with locale 'zh-CN'"
         
         # Verify result structure
-        assert "ppt_content" in result
-        assert "ppt_file_path" in result
+        assert result["ppt_content"] == "Mock PPT content"
     
     def test_default_locale_fallback(self, monkeypatch):
         """
@@ -131,5 +130,4 @@ class TestPPTLocalization:
             "get_prompt_template should be called with default locale 'en-US'"
         
         # Verify result structure
-        assert "ppt_content" in result
-        assert "ppt_file_path" in result
+        assert result["ppt_content"] == "Mock PPT content"

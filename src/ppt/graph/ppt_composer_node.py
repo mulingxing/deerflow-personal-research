@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: MIT
 
 import logging
-import os
-import uuid
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -19,15 +17,19 @@ logger = logging.getLogger(__name__)
 def ppt_composer_node(state: PPTState):
     logger.info("Generating ppt content...")
     model = get_llm_by_type(AGENT_LLM_MAP["ppt_composer"])
-    ppt_content = model.invoke(
+    response = model.invoke(
         [
-            SystemMessage(content=get_prompt_template("ppt/ppt_composer", locale=state.get("locale", "en-US"))),
+            SystemMessage(
+                content=get_prompt_template(
+                    "ppt/ppt_composer", locale=state.get("locale", "en-US")
+                )
+            ),
             HumanMessage(content=state["input"]),
         ],
     )
-    logger.info(f"ppt_content: {ppt_content}")
-    # save the ppt content in a temp file
-    temp_ppt_file_path = os.path.join(os.getcwd(), f"ppt_content_{uuid.uuid4()}.md")
-    with open(temp_ppt_file_path, "w") as f:
-        f.write(ppt_content.content)
-    return {"ppt_content": ppt_content, "ppt_file_path": temp_ppt_file_path}
+    ppt_content = response.content
+    if not isinstance(ppt_content, str) or not ppt_content.strip():
+        raise RuntimeError("The presentation model returned no slide content")
+    # 中文注释：仅记录长度，不把可能包含用户资料的整份报告写入日志或项目目录。
+    logger.info("Composed %d characters of presentation Markdown", len(ppt_content))
+    return {"ppt_content": ppt_content}

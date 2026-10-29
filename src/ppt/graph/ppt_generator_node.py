@@ -2,24 +2,15 @@
 # SPDX-License-Identifier: MIT
 
 import logging
-import os
-import subprocess
-import uuid
 
 from src.ppt.graph.state import PPTState
+from src.ppt.service import render_marp_pptx
 
 logger = logging.getLogger(__name__)
 
 
 def ppt_generator_node(state: PPTState):
     logger.info("Generating ppt file...")
-    # use marp cli to generate ppt file
-    # https://github.com/marp-team/marp-cli?tab=readme-ov-file
-    generated_file_path = os.path.join(
-        os.getcwd(), f"generated_ppt_{uuid.uuid4()}.pptx"
-    )
-    subprocess.run(["marp", state["ppt_file_path"], "-o", generated_file_path])
-    # remove the temp file
-    os.remove(state["ppt_file_path"])
-    logger.info(f"generated_file_path: {generated_file_path}")
-    return {"generated_file_path": generated_file_path}
+    ppt_bytes = render_marp_pptx(state["ppt_content"], state.get("theme", "default"))
+    logger.info("Generated %d bytes of PPTX content", len(ppt_bytes))
+    return {"ppt_bytes": ppt_bytes}

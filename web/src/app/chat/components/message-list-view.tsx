@@ -37,6 +37,7 @@ import {
   CollapsibleTrigger,
 } from "~/components/ui/collapsible";
 import type { Message, Option } from "~/core/messages";
+import { getPlanPresentation } from "~/core/messages/plan-presentation";
 import {
   closeResearch,
   openResearch,
@@ -67,6 +68,7 @@ export function MessageListView({
   const messageIds = useRenderableMessageIds();
   const interruptMessage = useLastInterruptMessage();
   const waitingForFeedbackMessageId = useLastFeedbackMessageId();
+  const conversationStatus = useStore((state) => state.conversationStatus);
   const responding = useStore((state) => state.responding);
   const noOngoingResearch = useStore(
     (state) => state.ongoingResearchId === null,
@@ -100,7 +102,10 @@ export function MessageListView({
           <MessageListItem
             key={messageId}
             messageId={messageId}
-            waitForFeedback={waitingForFeedbackMessageId === messageId}
+            waitForFeedback={
+              conversationStatus === "waiting_feedback" &&
+              waitingForFeedbackMessageId === messageId
+            }
             interruptMessage={interruptMessage}
             onFeedback={onFeedback}
             onSendMessage={onSendMessage}
@@ -451,7 +456,6 @@ function ThoughtBlock({
   );
 }
 
-const GREETINGS = ["Cool", "Sounds great", "Looks good", "Great", "Awesome"];
 function PlanCard({
   className,
   message,
@@ -471,13 +475,11 @@ function PlanCard({
   waitForFeedback?: boolean;
 }) {
   const t = useTranslations("chat.research");
-  const plan = useMemo<{
-    title?: string;
-    thought?: string;
-    steps?: { title?: string; description?: string; tools?: string[] }[];
-  }>(() => {
-    return parseJSON(message.content ?? "", {});
-  }, [message.content]);
+  const { plan, invalidPlan, canStartResearch } = useMemo(
+    () =>
+      getPlanPresentation(message.content ?? "", Boolean(message.isStreaming)),
+    [message.content, message.isStreaming],
+  );
 
   const reasoningContent = message.reasoningContent;
   const hasMainContent = Boolean(
@@ -489,19 +491,16 @@ function PlanCard({
 
   // 判断是否应该显示计划：有主要内容就显示（无论是否还在流式传输）
   const shouldShowPlan = hasMainContent;
-  const handleAccept = useCallback(async () => {
+  const handleAccept = useCallback(() => {
     if (onSendMessage) {
-      onSendMessage(
-        `${GREETINGS[Math.floor(Math.random() * GREETINGS.length)]}! ${Math.random() > 0.5 ? "Let's get started." : "Let's start."}`,
-        {
-          interruptFeedback: "accepted",
-        },
-      );
+      onSendMessage(t("startResearchConfirmed"), {
+        interruptFeedback: "accepted",
+      });
     }
-  }, [onSendMessage]);
+  }, [onSendMessage, t]);
   return (
     <div className={cn("w-full", className)}>
-      {reasoningContent && (
+      {reasoningContent && !invalidPlan && (
         <ThoughtBlock
           content={reasoningContent}
           isStreaming={isThinking}
@@ -529,43 +528,57 @@ function PlanCard({
             </CardHeader>
             <CardContent>
               <div style={{ wordBreak: 'break-all', whiteSpace: 'normal' }}>
-                <Markdown className="opacity-80" animated={false}>
-                  {plan.thought}
-                </Markdown>
-                {plan.steps && (
-                  <ul className="my-2 flex list-decimal flex-col gap-4 border-l-[2px] pl-8">
-                    {plan.steps.map((step, i) => (
-                      <li key={`step-${i}`} style={{ wordBreak: 'break-all', whiteSpace: 'normal' }}>
-                        <div className="flex items-start gap-2">
-                          <div className="flex-1">
-                            <h3 className="mb flex items-center gap-2 text-lg font-medium">
-                              <Markdown animated={false}>
-                                {step.title}
-                              </Markdown>
-                              {step.tools && step.tools.length > 0 && (
-                                <Tooltip
-                                  title={`Uses ${step.tools.length} MCP tool${step.tools.length > 1 ? "s" : ""}`}
+                {invalidPlan ? (
+                  <p className="bg-muted/60 rounded-lg border p-3 text-sm" role="alert">
+                    {t("invalidPlanHint")}
+                  </p>
+                ) : (
+                  <>
+                    <Markdown className="opacity-80" animated={false}>
+                      {plan.thought}
+                    </Markdown>
+                    {plan.steps.length > 0 && (
+                      <ul className="my-2 flex list-decimal flex-col gap-4 border-l-[2px] pl-8">
+                        {plan.steps.map((step, i) => (
+                          <li
+                            key={`step-${i}`}
+                            style={{ wordBreak: "break-all", whiteSpace: "normal" }}
+                          >
+                            <div className="flex items-start gap-2">
+                              <div className="flex-1">
+                                <h3 className="mb flex items-center gap-2 text-lg font-medium">
+                                  <Markdown animated={false}>
+                                    {step.title}
+                                  </Markdown>
+                                  {step.tools && step.tools.length > 0 && (
+                                    <Tooltip
+                                      title={`Uses ${step.tools.length} MCP tool${step.tools.length > 1 ? "s" : ""}`}
+                                    >
+                                      <div className="flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-xs text-blue-800">
+                                        <Wrench size={12} />
+                                        <span>{step.tools.length}</span>
+                                      </div>
+                                    </Tooltip>
+                                  )}
+                                </h3>
+                                <div
+                                  className="text-muted-foreground text-sm"
+                                  style={{ wordBreak: "break-all", whiteSpace: "normal" }}
                                 >
-                                  <div className="flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 text-xs text-blue-800">
-                                    <Wrench size={12} />
-                                    <span>{step.tools.length}</span>
-                                  </div>
-                                </Tooltip>
-                              )}
-                            </h3>
-                            <div className="text-muted-foreground text-sm" style={{ wordBreak: 'break-all', whiteSpace: 'normal' }}>
-                              <Markdown animated={false}>
-                                {step.description}
-                              </Markdown>
+                                  <Markdown animated={false}>
+                                    {step.description}
+                                  </Markdown>
+                                </div>
+                                {step.tools && step.tools.length > 0 && (
+                                  <ToolsDisplay tools={step.tools} />
+                                )}
+                              </div>
                             </div>
-                            {step.tools && step.tools.length > 0 && (
-                              <ToolsDisplay tools={step.tools} />
-                            )}
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
                 )}
               </div>
             </CardContent>
@@ -583,18 +596,28 @@ function PlanCard({
                       variant={
                         option.value === "accepted" ? "default" : "outline"
                       }
-                      disabled={!waitForFeedback}
+                      disabled={
+                        !waitForFeedback ||
+                        (option.value === "accepted" && !canStartResearch)
+                      }
                       onClick={() => {
                         if (option.value === "accepted") {
                           void handleAccept();
                         } else {
                           onFeedback?.({
-                            option,
+                            option:
+                              option.value === "edit_plan"
+                                ? { ...option, text: t("editPlan") }
+                                : option,
                           });
                         }
                       }}
                     >
-                      {option.text}
+                      {option.value === "accepted"
+                        ? t("startResearch")
+                        : option.value === "edit_plan"
+                          ? t("editPlan")
+                          : option.text}
                     </Button>
                   ))}
                 </motion.div>

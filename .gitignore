@@ -16,6 +16,24 @@ venv/
 
 # Environment variables
 .env
+.env.*
+!.env.example
+!.env.*.example
+
+# Project-local runtimes, package caches and service logs
+.tools/
+.cache/
+.runtime/
+
+# Local learning material and private notes
+/learning/
+/笔记/
+
+# Local output and temporary files
+*.log
+*.tmp
+*.sqlite3
+*.sqlite3-*
 
 # user conf
 conf.yaml

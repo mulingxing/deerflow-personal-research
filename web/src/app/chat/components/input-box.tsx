@@ -3,9 +3,10 @@
 
 import { MagicWandIcon } from "@radix-ui/react-icons";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUp, Lightbulb, X } from "lucide-react";
+import { ArrowUp, BookOpen, Globe2, Lightbulb, X } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import { Detective } from "~/components/deer-flow/icons/detective";
 import MessageInput, {
@@ -15,15 +16,43 @@ import { ReportStyleDialog } from "~/components/deer-flow/report-style-dialog";
 import { Tooltip } from "~/components/deer-flow/tooltip";
 import { BorderBeam } from "~/components/magicui/border-beam";
 import { Button } from "~/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { enhancePrompt } from "~/core/api";
 import { useConfig } from "~/core/api/hooks";
+import { listRAGResources } from "~/core/api/rag";
 import type { Option, Resource } from "~/core/messages";
+import {
+  getResourceDisplayName,
+  getResourceTypeLabel,
+} from "~/core/rag-resource";
 import {
   setEnableDeepThinking,
   setEnableBackgroundInvestigation,
+  setEnableWebSearch,
   useSettingsStore,
+  useStore,
 } from "~/core/store";
 import { cn } from "~/lib/utils";
+
+type ResearchMode = "web" | "local" | "hybrid";
+
+const modeTranslationKey: Record<
+  ResearchMode,
+  "webOnly" | "localOnly" | "hybrid"
+> = {
+  web: "webOnly",
+  local: "localOnly",
+  hybrid: "hybrid",
+};
 
 export function InputBox({
   className,
@@ -43,11 +72,12 @@ export function InputBox({
       interruptFeedback?: string;
       resources?: Array<Resource>;
     },
-  ) => void;
+  ) => boolean | void;
   onCancel?: () => void;
   onRemoveFeedback?: () => void;
 }) {
   const t = useTranslations("chat.inputBox");
+  const tHistory = useTranslations("chat.history");
   const tCommon = useTranslations("common");
   const enableDeepThinking = useSettingsStore(
     (state) => state.general.enableDeepThinking,
@@ -55,6 +85,14 @@ export function InputBox({
   const backgroundInvestigation = useSettingsStore(
     (state) => state.general.enableBackgroundInvestigation,
   );
+  const enableWebSearch = useSettingsStore(
+    (state) => state.general.enableWebSearch,
+  );
+  const conversationSwitching = useStore(
+    (state) => state.conversationSwitching,
+  );
+  const sendStarting = useStore((state) => state.sendStarting);
+  const remoteRunning = useStore((state) => state.remoteRunning);
   const { config, loading } = useConfig();
   const reportStyle = useSettingsStore((state) => state.general.reportStyle);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -65,27 +103,133 @@ export function InputBox({
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [isEnhanceAnimating, setIsEnhanceAnimating] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState("");
+  const researchMode = useStore((state) => state.researchMode);
+  const selectedResources = useStore((state) => state.selectedResources);
+  const setResearchMode = useStore((state) => state.setResearchMode);
+  const setSelectedResources = useStore((state) => state.setSelectedResources);
+  const [availableResources, setAvailableResources] = useState<Resource[]>([]);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [resourceLoadFailed, setResourceLoadFailed] = useState(false);
+
+  useEffect(() => {
+    if (!enableWebSearch && researchMode !== "local") {
+      setResearchMode("local");
+    } else if (enableWebSearch && researchMode === "local") {
+      setResearchMode(selectedResources.length > 0 ? "hybrid" : "web");
+    }
+  }, [
+    enableWebSearch,
+    researchMode,
+    selectedResources.length,
+    setResearchMode,
+  ]);
+
+  const loadAvailableResources = useCallback(async () => {
+    if (!config.rag.provider) return;
+
+    setResourcesLoading(true);
+    setResourceLoadFailed(false);
+    try {
+      const latest = await listRAGResources();
+      setAvailableResources(latest);
+      setSelectedResources((current) =>
+        current.filter((selected) =>
+          latest.some((item) => item.uri === selected.uri),
+        ),
+      );
+    } catch (error) {
+      console.error("Failed to load RAG resources:", error);
+      setResourceLoadFailed(true);
+    } finally {
+      setResourcesLoading(false);
+    }
+  }, [config.rag.provider, setSelectedResources]);
+
+  const changeResearchMode = useCallback(
+    (value: string) => {
+      const next = value as ResearchMode;
+      if ((next === "local" || next === "hybrid") && !config.rag.provider) {
+        toast.error(t("providerRequired"));
+        return;
+      }
+
+      setResearchMode(next);
+      setEnableWebSearch(next !== "local");
+      if (next === "web") setSelectedResources([]);
+    },
+    [config.rag.provider, setResearchMode, setSelectedResources, t],
+  );
 
   const handleSendMessage = useCallback(
     (message: string, resources: Array<Resource>) => {
       if (responding) {
         onCancel?.();
-      } else {
-        if (message.trim() === "") {
-          return;
-        }
-        if (onSend) {
-          onSend(message, {
-            interruptFeedback: feedback?.option.value,
-            resources,
-          });
-          onRemoveFeedback?.();
-          // Clear enhancement animation after sending
-          setIsEnhanceAnimating(false);
-        }
+        return true;
       }
+
+      // 切换会话或首次加载历史时保留输入草稿，等待操作结束后再发送。
+      if (conversationSwitching || sendStarting) return false;
+      if (remoteRunning) {
+        toast.error(tHistory("runningElsewhere"));
+        return false;
+      }
+
+      if (message.trim() === "") return false;
+
+      // 资料按钮和 @ 提及可以同时使用，按 URI 去重后再随请求发送。
+      const mentionedResources = resources.filter((resource) => resource.uri);
+      const mergedResources = Array.from(
+        new Map(
+          [...selectedResources, ...mentionedResources].map((resource) => [
+            resource.uri,
+            resource,
+          ]),
+        ).values(),
+      );
+      const mode =
+        researchMode === "web" && mentionedResources.length > 0
+          ? "hybrid"
+          : researchMode;
+
+      if (mode !== "web" && !config.rag.provider) {
+        toast.error(t("providerRequired"));
+        return false;
+      }
+      if (mode !== "web" && mergedResources.length === 0) {
+        toast.error(t("resourceRequired"));
+        return false;
+      }
+
+      if (mentionedResources.length > 0) setSelectedResources(mergedResources);
+      if (mode !== researchMode) setResearchMode(mode);
+      if (onSend) {
+        const accepted = onSend(message, {
+          interruptFeedback: feedback?.option.value,
+          resources: mode === "web" ? [] : mergedResources,
+        });
+        if (accepted === false) return false;
+        onRemoveFeedback?.();
+        setIsEnhanceAnimating(false);
+      }
+      return true;
     },
-    [responding, onCancel, onSend, feedback, onRemoveFeedback],
+    [
+      responding,
+      onCancel,
+      onSend,
+      feedback,
+      onRemoveFeedback,
+      selectedResources,
+      setSelectedResources,
+      researchMode,
+      setResearchMode,
+      config.rag.provider,
+      conversationSwitching,
+      sendStarting,
+      remoteRunning,
+      tHistory,
+      t,
+    ],
   );
 
   const handleEnhancePrompt = useCallback(async () => {
@@ -127,7 +271,7 @@ export function InputBox({
   return (
     <div
       className={cn(
-        "bg-card relative flex h-full w-full flex-col rounded-[24px] border",
+        "bg-card relative flex min-h-42 w-full flex-col rounded-[24px] border",
         className,
       )}
       ref={containerRef}
@@ -212,8 +356,108 @@ export function InputBox({
           onChange={setCurrentPrompt}
         />
       </div>
-      <div className="flex items-center px-4 py-2">
-        <div className="flex grow gap-2">
+      {/* 双栏或窄屏时工具按钮可以换行，发送按钮仍留在输入框内。 */}
+      <div className="flex flex-wrap items-end gap-2 px-4 py-2">
+        <div className="flex min-w-0 flex-[1_1_200px] flex-wrap items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="rounded-2xl">
+                {researchMode === "local" ? <BookOpen /> : <Globe2 />}
+                {t(modeTranslationKey[researchMode])}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuLabel>{t("researchMode")}</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={researchMode}
+                onValueChange={changeResearchMode}
+              >
+                <DropdownMenuRadioItem value="web">
+                  {t("webOnly")}
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="local">
+                  {t("localOnly")}
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="hybrid">
+                  {t("hybrid")}
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu
+            onOpenChange={(open) => {
+              if (open) void loadAvailableResources();
+            }}
+          >
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="rounded-2xl"
+                disabled={loading || !config.rag.provider}
+                title={!config.rag.provider ? t("providerRequired") : undefined}
+              >
+                <BookOpen />
+                {selectedResources.length > 0
+                  ? t("selectedResources", { count: selectedResources.length })
+                  : t("selectResources")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="max-h-72 w-80 max-w-[calc(100vw-2rem)] overflow-y-auto"
+            >
+              <DropdownMenuLabel>{t("selectResources")}</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {resourcesLoading ? (
+                <DropdownMenuLabel>{t("selectResources")}...</DropdownMenuLabel>
+              ) : resourceLoadFailed ? (
+                <DropdownMenuLabel>{t("resourceLoadFailed")}</DropdownMenuLabel>
+              ) : availableResources.length === 0 ? (
+                <DropdownMenuLabel>
+                  {t("noResourcesAvailable")}
+                </DropdownMenuLabel>
+              ) : (
+                availableResources.map((resource) => {
+                  const displayName = getResourceDisplayName(resource);
+                  const typeLabel = getResourceTypeLabel(resource);
+
+                  return (
+                    <DropdownMenuCheckboxItem
+                      key={resource.uri}
+                      checked={selectedResources.some(
+                        (selected) => selected.uri === resource.uri,
+                      )}
+                      onSelect={(event) => event.preventDefault()}
+                      onCheckedChange={(checked) => {
+                        setSelectedResources((current) =>
+                          checked
+                            ? [...current, resource]
+                            : current.filter(
+                                (item) => item.uri !== resource.uri,
+                              ),
+                        );
+                        if (checked && researchMode === "web") {
+                          changeResearchMode("hybrid");
+                        }
+                      }}
+                      title={displayName}
+                    >
+                      <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                        <span className="truncate">{displayName}</span>
+                        {typeLabel && (
+                          <span className="text-muted-foreground bg-muted shrink-0 rounded px-1.5 py-0.5 text-xs">
+                            {typeLabel}
+                          </span>
+                        )}
+                      </span>
+                    </DropdownMenuCheckboxItem>
+                  );
+                })
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           {config?.models?.reasoning && config.models.reasoning.length > 0 && (
             <Tooltip
               className="max-w-60"
@@ -275,7 +519,7 @@ export function InputBox({
           </Tooltip>
           <ReportStyleDialog />
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <Tooltip title={t("enhancePrompt")}>
             <Button
               variant="ghost"

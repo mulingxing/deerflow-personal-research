@@ -1,5 +1,46 @@
 # 🦌 DeerFlow
 
+> **Portfolio adaptation of [bytedance/deer-flow](https://github.com/bytedance/deer-flow), not an original implementation of DeerFlow.** This repository starts from the upstream `main-1.x` commit [`2ab2876`](https://github.com/bytedance/deer-flow/commit/2ab28765803d4d9582aaa8f2f3355137d154e273). The upstream LangGraph research workflow, search tools, report generation, and human plan review remain upstream work. This version adds the features below. The original [MIT license](LICENSE) and attribution are retained.
+
+## Additions in this version
+
+| Addition | What it does | Main code / details |
+| --- | --- | --- |
+| Local document research | Upload Markdown, text, PDF, or DOCX files; index selected files with local Qdrant and search them alone or alongside web results. | [`src/rag/ingestion.py`](src/rag/ingestion.py), [`src/rag/qdrant.py`](src/rag/qdrant.py), [`web/src/app/settings/tabs/rag-tab.tsx`](web/src/app/settings/tabs/rag-tab.tsx), [guide](docs/STAGE1_PERSONAL_RESEARCH.md) |
+| Report source panel | Collect source records from research tools, show their locations, and flag missing or invalid citation markers in reports. Citation coverage checks marker presence, not whether a claim is true. | [`src/citations/report_sources.py`](src/citations/report_sources.py), [`web/src/core/evidence/audit.ts`](web/src/core/evidence/audit.ts), [guide](docs/STAGE2_EVIDENCE.md) |
+| Local conversation history | Save research snapshots in SQLite, reopen completed conversations, and detect conflicting updates from another tab. | [`src/server/history.py`](src/server/history.py), [`web/src/app/chat/components/history-sidebar.tsx`](web/src/app/chat/components/history-sidebar.tsx), [guide](docs/STAGE3_HISTORY.md) |
+| Presentation export | Turn report text or notes into a downloadable PPTX with five theme previews, slide splitting, and rendered overflow checks. | [`src/ppt/service.py`](src/ppt/service.py), [`web/src/app/ppt/page.tsx`](web/src/app/ppt/page.tsx), [guide](docs/STAGE4_PPT.md) |
+
+This adaptation is intended for **local, single-user use**. Its history API does not authenticate users; do not expose it to an untrusted network. A cloud LLM still receives selected document excerpts when answering document questions. The PPTX export renders slide pages as images, so individual text boxes are generally not editable.
+
+### Reproduce this version
+
+Use Python 3.12, [uv](https://docs.astral.sh/uv/), Node.js 22, and pnpm 10.6.5. After cloning **this repository** and entering its root directory, run:
+
+```powershell
+uv sync --locked --extra test
+Copy-Item .env.local.example .env
+Copy-Item conf.deepseek.yaml.example conf.yaml
+Set-Location web
+pnpm install --frozen-lockfile
+Set-Location ..
+```
+
+Add your own model key to `.env`; web research additionally needs a search provider and its key. Keep `.env`, `conf.yaml`, uploaded files, and `.runtime/` local. Start the backend with `uv run python server.py` and the web app with `pnpm dev` from `web/`, in separate terminals. Open `http://127.0.0.1:3000`. The [Windows baseline guide](docs/STAGE0_WINDOWS.md) records the initial upstream setup; the four guides above cover this version's additions. The repository's `start.cmd` and `verify.cmd` are convenience scripts for a local `.tools/` runtime layout and are not required for a fresh clone.
+
+Offline checks for the additions:
+
+```powershell
+uv run python -m pytest tests/unit/citations/test_report_sources.py tests/unit/server/test_history.py tests/unit/ppt/test_service.py -q
+Set-Location web
+pnpm typecheck
+pnpm test:run --runInBand
+```
+
+The video and replay links in the upstream README below show **the original DeerFlow project**, not a demo of the additions in this repository.
+
+---
+
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-bytedance%2Fdeer--flow-blue.svg?logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McCcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/bytedance/deer-flow)
@@ -27,7 +68,7 @@ DeerFlow has newly integrated the intelligent search and crawling toolset indepe
 
 Please visit [our official website](https://deerflow.tech/) for more details.
 
-## Demo
+## Upstream demo (original DeerFlow)
 
 ### Video
 
@@ -88,9 +129,7 @@ Make sure your system meets the following minimum requirements:
 ### Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/bytedance/deer-flow.git
-cd deer-flow
+# Clone this repository using its GitHub Code button, then enter its root directory.
 
 # Install dependencies, uv will take care of the python interpreter and venv creation, and install the required packages
 uv sync

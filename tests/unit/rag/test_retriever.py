@@ -39,16 +39,39 @@ def test_document_to_dict_optional_fields():
     assert "title" not in d
 
 
+def test_document_keeps_uploaded_file_location():
+    chunk = Chunk(
+        content="论文提出了新的检索方法",
+        similarity=0.92,
+        page_number=3,
+        section="方法",
+    )
+    result = Document(
+        id="paper",
+        url="qdrant://documents/paper.pdf",
+        title="paper.pdf",
+        chunks=[chunk],
+    ).to_dict()
+
+    assert result["source_type"] == "local_document"
+    assert result["chunks"][0]["page_number"] == 3
+    assert result["chunks"][0]["section"] == "方法"
+
+
 def test_resource_model():
     resource = Resource(uri="uri1", title="Resource Title")
     assert resource.uri == "uri1"
     assert resource.title == "Resource Title"
     assert resource.description == ""
+    assert resource.filename is None
 
 
 def test_resource_model_with_description():
-    resource = Resource(uri="uri2", title="Resource2", description="desc")
+    resource = Resource(
+        uri="uri2", title="Resource2", description="desc", filename="notes.docx"
+    )
     assert resource.description == "desc"
+    assert resource.model_dump()["filename"] == "notes.docx"
 
 
 def test_retriever_abstract_methods():
@@ -71,7 +94,7 @@ def test_retriever_abstract_methods():
     assert isinstance(resources, list)
     assert isinstance(resources[0], Resource)
     assert resources[0].uri == "uri"
-    
+
     docs = retriever.query_relevant_documents("query", resources)
     assert isinstance(docs, list)
     assert isinstance(docs[0], Document)
@@ -86,6 +109,7 @@ def test_retriever_cannot_instantiate():
 @pytest.mark.asyncio
 async def test_retriever_async_methods():
     """Test that async methods work correctly in DummyRetriever."""
+
     class DummyRetriever(Retriever):
         def list_resources(self, query=None):
             return [Resource(uri="uri", title="title")]
@@ -100,13 +124,13 @@ async def test_retriever_async_methods():
             return [Document(id="id_async", chunks=[])]
 
     retriever = DummyRetriever()
-    
+
     # Test async list_resources
     resources = await retriever.list_resources_async()
     assert isinstance(resources, list)
     assert isinstance(resources[0], Resource)
     assert resources[0].uri == "uri_async"
-    
+
     # Test async query_relevant_documents
     docs = await retriever.query_relevant_documents_async("query", resources)
     assert isinstance(docs, list)

@@ -11,9 +11,9 @@ class PPTState(MessagesState):
     # Input
     input: str = ""
     locale: str = ""
+    theme: str = "default"
     # Output
-    generated_file_path: str = ""
+    ppt_bytes: bytes = b""
 
     # Assets
     ppt_content: str = ""
-    ppt_file_path: str = ""

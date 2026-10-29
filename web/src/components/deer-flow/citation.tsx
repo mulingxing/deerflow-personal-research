@@ -9,6 +9,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "~/components/ui/hover-card";
+import { isWebSourceUrl } from "~/core/evidence/audit";
 import { cn } from "~/lib/utils";
 import type { Citation } from "~/core/messages";
 
@@ -37,10 +38,10 @@ export function CitationLink({
   // Find matching citation data for this URL
   const { citation, index } = useMemo(() => {
     if (!href || !citations) return { citation: null, index: -1 };
-    
+
     // Try exact match first
     let matchIndex = citations.findIndex((c) => c.url === href);
-    
+
     // If not found, try versatile comparison using normalized URLs
     if (matchIndex === -1) {
       const normalizeUrl = (url: string) => {
@@ -52,19 +53,28 @@ export function CitationLink({
       };
 
       const normalizedHref = normalizeUrl(href);
-      
+
       matchIndex = citations.findIndex(
-        (c) => normalizeUrl(c.url) === normalizedHref
+        (c) => normalizeUrl(c.url) === normalizedHref,
       );
     }
-    
+
     const match = matchIndex !== -1 ? citations[matchIndex] : null;
-    
+
     return { citation: match, index: matchIndex };
   }, [href, citations]);
 
-  // If no citation data found, render as regular link
+  const isLocalSource =
+    citation?.source_type === "local_document" ||
+    /^(?:rag|qdrant|milvus):\/\//i.test(href);
+  const hasUnsafeProtocol =
+    /^[a-z][a-z\d+.-]*:/i.test(href) && !isWebSourceUrl(href);
+
+  // 本地资料和非网页协议的 URI 仅用于定位来源，不能作为网页打开。
   if (!citation) {
+    if (isLocalSource || hasUnsafeProtocol) {
+      return <span className={cn("text-primary", className)}>{children}</span>;
+    }
     return (
       <a
         href={href}
@@ -95,22 +105,36 @@ export function CitationLink({
   return (
     <HoverCard openDelay={200} closeDelay={100}>
       <HoverCardTrigger asChild>
-        <a
-          id={id}
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={handleCitationClick}
-          className={cn(
-            "text-primary hover:underline inline-flex items-center gap-0.5 cursor-pointer scroll-mt-20",
-            className
-          )}
-        >
-          {children}
-          <span className="text-xs text-muted-foreground ml-0.5">
-            <ExternalLink className="h-3 w-3 inline" />
-          </span>
-        </a>
+        {isLocalSource || hasUnsafeProtocol ? (
+          <button
+            id={id}
+            type="button"
+            onClick={handleCitationClick}
+            className={cn(
+              "text-primary inline-flex cursor-pointer scroll-mt-20 items-center gap-0.5 hover:underline",
+              className,
+            )}
+          >
+            {children}
+          </button>
+        ) : (
+          <a
+            id={id}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={handleCitationClick}
+            className={cn(
+              "text-primary inline-flex cursor-pointer scroll-mt-20 items-center gap-0.5 hover:underline",
+              className,
+            )}
+          >
+            {children}
+            <span className="text-muted-foreground ml-0.5 text-xs">
+              <ExternalLink className="inline h-3 w-3" />
+            </span>
+          </a>
+        )}
       </HoverCardTrigger>
       <HoverCardContent
         className="w-80 p-4"
@@ -141,6 +165,8 @@ export function CitationCard({ citation, compact = false }: CitationCardProps) {
     relevance_score,
     accessed_at,
     source_type,
+    page_number,
+    section,
   } = citation;
 
   // Format access date
@@ -167,12 +193,12 @@ export function CitationCard({ citation, compact = false }: CitationCardProps) {
   return (
     <span className={cn("block space-y-2", compact && "space-y-1")}>
       {/* Title */}
-      <span className="block font-semibold text-sm line-clamp-2 leading-snug">
+      <span className="line-clamp-2 block text-sm leading-snug font-semibold">
         {title}
       </span>
 
       {/* Domain and metadata row */}
-      <span className="flex items-center gap-3 text-xs text-muted-foreground">
+      <span className="text-muted-foreground flex items-center gap-3 text-xs">
         {domain && (
           <span className="flex items-center gap-1">
             <Globe className="h-3 w-3" />
@@ -195,20 +221,30 @@ export function CitationCard({ citation, compact = false }: CitationCardProps) {
 
       {/* Description/snippet */}
       {description && !compact && (
-        <span className="block text-xs text-muted-foreground line-clamp-3 leading-relaxed">
+        <span className="text-muted-foreground line-clamp-3 block text-xs leading-relaxed">
           {description}
         </span>
       )}
 
       {/* Source type badge */}
       {source_type && (
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-secondary text-secondary-foreground">
-          {source_type === "web_search" ? "Web" : source_type}
+        <span className="bg-secondary text-secondary-foreground inline-flex items-center rounded px-1.5 py-0.5 text-[10px]">
+          {source_type === "local_document"
+            ? "我的资料"
+            : source_type === "web_search"
+              ? "网页"
+              : source_type}
+        </span>
+      )}
+
+      {source_type === "local_document" && (page_number || section) && (
+        <span className="text-muted-foreground ml-2 text-xs">
+          {page_number ? `第 ${page_number} 页` : section}
         </span>
       )}
 
       {/* URL preview */}
-      <span className="block text-[10px] text-muted-foreground truncate opacity-60">
+      <span className="text-muted-foreground block truncate text-[10px] opacity-60">
         {url}
       </span>
     </span>
@@ -235,36 +271,51 @@ export function CitationList({
 
   return (
     <div className={cn("space-y-3", className)}>
-      <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+      <h3 className="text-foreground text-sm font-semibold">{title}</h3>
       <div className="space-y-2">
         {citations.map((citation, index) => (
           <div
             key={citation.url || index}
-            className="p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+            className="bg-card hover:bg-accent/50 rounded-lg border p-3 transition-colors"
           >
             <div className="flex items-start gap-3">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-medium flex items-center justify-center">
+              <span className="bg-primary/10 text-primary flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-xs font-medium">
                 {index + 1}
               </span>
-              <div className="flex-1 min-w-0">
-                <a
-                  href={citation.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm font-medium text-foreground hover:text-primary hover:underline line-clamp-1"
-                >
-                  {citation.title}
-                </a>
+              <div className="min-w-0 flex-1">
+                {citation.source_type === "local_document" ||
+                !isWebSourceUrl(citation.url) ? (
+                  <span className="text-foreground line-clamp-1 text-sm font-medium">
+                    {citation.title}
+                  </span>
+                ) : (
+                  <a
+                    href={citation.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-foreground hover:text-primary line-clamp-1 text-sm font-medium hover:underline"
+                  >
+                    {citation.title}
+                  </a>
+                )}
                 {citation.domain && (
-                  <p className="text-xs text-muted-foreground mt-0.5">
+                  <p className="text-muted-foreground mt-0.5 text-xs">
                     {citation.domain}
                   </p>
                 )}
                 {citation.description && (
-                  <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                  <p className="text-muted-foreground mt-1 line-clamp-2 text-xs">
                     {citation.description}
                   </p>
                 )}
+                {citation.source_type === "local_document" &&
+                  (citation.page_number || citation.section) && (
+                    <p className="text-muted-foreground mt-1 text-xs">
+                      {citation.page_number
+                        ? `第 ${citation.page_number} 页`
+                        : citation.section}
+                    </p>
+                  )}
               </div>
             </div>
           </div>
@@ -283,11 +334,15 @@ interface CitationBadgeProps {
 /**
  * Small numbered badge for inline citations.
  */
-export function CitationBadge({ number, citation, onClick }: CitationBadgeProps) {
+export function CitationBadge({
+  number,
+  citation,
+  onClick,
+}: CitationBadgeProps) {
   const badge = (
     <button
       onClick={onClick}
-      className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-medium hover:bg-primary/20 transition-colors align-super ml-0.5 cursor-pointer"
+      className="bg-primary/10 text-primary hover:bg-primary/20 ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full align-super text-[10px] font-medium transition-colors"
     >
       {number}
     </button>

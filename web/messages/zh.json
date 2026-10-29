@@ -34,14 +34,22 @@
     "pasteConfigBelow": "将您的配置粘贴到下面，然后点击\"添加\"来添加新服务器。",
     "rag": {
       "title": "资源",
-      "description": "在此管理您的知识库资源。上传 Markdown 或文本文件以供检索索引。",
+      "description": "上传 Markdown、文本、PDF 或 Word 文档；文件处理完成后可在聊天中选择。",
       "upload": "上传",
       "uploading": "上传中...",
-      "uploadSuccess": "文件上传成功",
+      "uploadSuccess": "资料处理完成，可以在聊天中使用",
       "uploadFailed": "文件上传失败",
       "emptyFile": "无法上传空文件",
       "loading": "正在加载资源...",
-      "noResources": "未找到资源。上传文件以开始使用。"
+      "loadFailed": "加载资料失败，请稍后重试。",
+      "noResources": "未找到资料。上传文件以开始使用。",
+      "providerRequired": "尚未配置知识库服务。请先配置 RAG_PROVIDER，再上传或选择资料。",
+      "status": {
+        "queued": "等待处理",
+        "processing": "正在建立索引",
+        "completed": "处理完成",
+        "failed": "处理失败"
+      }
     },
     "add": "添加",
     "general": {
@@ -94,6 +102,54 @@
       "strategicInvestmentDesc": "面向战略投资机构的深度综合分析，提供可执行的投资洞察"
     }
   },
+  "ppt": {
+    "eyebrow": "演示文稿",
+    "title": "生成 PPT",
+    "description": "粘贴资料或从研究报告带入内容，选择喜欢的风格，再生成演示文稿。",
+    "backToChat": "返回聊天",
+    "contentLabel": "演示内容",
+    "characterCount": "{count} 字",
+    "contentPlaceholder": "粘贴研究报告、讲稿或学习笔记……",
+    "contentHint": "内容会先整理为幻灯片要点，再生成 PowerPoint 文件。",
+    "themeLabel": "选择风格",
+    "themeHint": "预览对应真实模板的封面效果。",
+    "downloadTitle": "准备生成",
+    "downloadHint": "生成过程可能需要几十秒；常规导出的 PPT 页面为图像，文字通常不能在 PowerPoint 中单独编辑。",
+    "generate": "生成并下载 PPT",
+    "generating": "正在生成",
+    "generationProgress": "正在整理内容和绘制幻灯片，已等待 {seconds} 秒……",
+    "contentRequired": "请先填写演示内容",
+    "generationSuccess": "PPT 已生成并开始下载",
+    "generationFailed": "PPT 生成失败",
+    "generationFailedWithReason": "PPT 生成失败：{reason}",
+    "themes": {
+      "default": {
+        "name": "简洁白",
+        "description": "清楚、通用，适合工作汇报",
+        "previewAlt": "简洁白风格预览"
+      },
+      "gaia": {
+        "name": "暖色演讲",
+        "description": "柔和暖色，适合分享与演讲",
+        "previewAlt": "暖色演讲风格预览"
+      },
+      "uncover": {
+        "name": "极简灰",
+        "description": "留白丰富，适合观点展示",
+        "previewAlt": "极简灰风格预览"
+      },
+      "midnight": {
+        "name": "深夜蓝",
+        "description": "深色渐变，适合技术主题",
+        "previewAlt": "深夜蓝风格预览"
+      },
+      "paper": {
+        "name": "书页绿",
+        "description": "纸张纹理，适合教学和阅读",
+        "previewAlt": "书页绿风格预览"
+      }
+    }
+  },
   "footer": {
     "quote": "源于开源，回馈开源。",
     "license": "基于 MIT 许可证授权",
@@ -127,11 +183,52 @@
         "description": "启用后，DeerFlow 将在规划前进行快速搜索。这对于与时事和新闻相关的研究很有用。"
       },
       "enhancePrompt": "用 AI 增强提示",
+      "researchMode": "研究资料范围",
+      "webOnly": "仅联网",
+      "localOnly": "仅我的资料",
+      "hybrid": "资料 + 联网",
+      "selectResources": "选择资料",
+      "selectedResources": "已选 {count} 份资料",
+      "noResourcesAvailable": "暂无可用资料，请先在设置中上传。",
+      "resourceLoadFailed": "资料列表加载失败，请稍后再试。",
+      "providerRequired": "请先配置知识库服务，才能使用个人资料研究。",
+      "resourceRequired": "请至少选择一份资料。输入 @ 也可以引用资料。",
       "on": "开启",
       "off": "关闭"
     },
+    "evidence": {
+      "title": "证据检查",
+      "sourcesTitle": "检索到的来源",
+      "noSources": "未取得可核对的来源，请谨慎看待报告中的事实性结论。",
+      "coverage": "正文段落引用覆盖：{covered}/{total}（{percent}%）",
+      "coverageDisclaimer": "该数字只检查段落是否标了有效来源编号，不代表来源真的支持结论。",
+      "unknownUrls": "报告包含 {count} 个未在检索结果中出现的来源链接。",
+      "invalidNumbers": "报告包含 {count} 个无效的来源编号。",
+      "unknownUrlLabel": "未匹配的链接",
+      "invalidNumberLabel": "无效编号"
+    },
+    "history": {
+      "title": "历史会话",
+      "description": "查看以前的研究并继续提问",
+      "newConversation": "新建会话",
+      "refresh": "刷新列表",
+      "actionFailed": "操作失败",
+      "finishCurrent": "请等待当前研究结束再切换会话",
+      "loading": "加载中…",
+      "empty": "还没有历史会话",
+      "needsRetry": "运行已中断，请重新提问",
+      "runningElsewhere": "此会话仍在运行，请稍后刷新再继续",
+      "recoverStopped": "原任务已停止，恢复提问",
+      "recoverConfirm": "确认原标签页中的研究已经停止？此操作会将本次研究标为中断，然后可以重新提问。",
+      "delete": "删除会话",
+      "deleteConfirm": "确定删除这个会话吗？"
+    },
     "research": {
       "deepResearch": "深度研究",
+      "editPlan": "修改计划",
+      "startResearch": "开始研究",
+      "startResearchConfirmed": "好的，开始研究。",
+      "invalidPlanHint": "研究计划格式异常，当前内容未经资料检索核实，不能视为最终答案。请在输入框重新提问。",
       "researching": "研究中...",
       "generatingReport": "生成报告中...",
       "reportGenerated": "报告已生成",
@@ -141,6 +238,8 @@
       "report": "报告",
       "activities": "活动",
       "generatePodcast": "生成播客",
+      "generatePPT": "生成 PPT",
+      "pptDraftFailed": "无法打开 PPT 编辑页，请检查浏览器存储设置",
       "edit": "编辑",
       "copy": "复制",
       "downloadReport": "下载报告",

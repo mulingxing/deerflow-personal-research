@@ -1,0 +1,16 @@
+/* @theme deerflow-gaia */
+@import 'gaia';
+
+/* 中文长表格固定列宽并允许换行，避免第一列挤成逐字竖排。 */
+section table {
+  width: 100%;
+  table-layout: fixed;
+  font-size: 0.78em;
+}
+section table th,
+section table td {
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+section table th:first-child,
+section table td:first-child { width: 14%; }

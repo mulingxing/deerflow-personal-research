@@ -19,6 +19,9 @@ export const metadata: Metadata = {
   description:
     "Deep Exploration and Efficient Research, an AI tool that combines language models with specialized tools for research tasks.",
   icons: [{ rel: "icon", url: "/favicon.ico" }],
+  other: {
+    google: "notranslate",
+  },
 };
 
 const geist = Geist({
@@ -33,7 +36,14 @@ export default async function RootLayout({
   const messages = await getMessages();
   
   return (
-    <html lang={locale} className={`${geist.variable}`} suppressHydrationWarning>
+    // Browser translation can replace text nodes and break React updates.
+    // Use the app's next-intl language switcher for localized UI instead.
+    <html
+      lang={locale}
+      translate="no"
+      className={`${geist.variable} notranslate`}
+      suppressHydrationWarning
+    >
       <head>
         {/* Define isSpace function globally to fix markdown-it issues with Next.js + Turbopack
           https://github.com/markdown-it/markdown-it/issues/1082#issuecomment-2749656365 */}

@@ -4,6 +4,10 @@
 import { useTranslations } from "next-intl";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import type { Resource } from "~/core/messages";
+import {
+  getResourceDisplayName,
+  getResourceTypeLabel,
+} from "~/core/rag-resource";
 import { cn } from "~/lib/utils";
 
 export interface ResourceMentionsProps {
@@ -15,14 +19,14 @@ export const ResourceMentions = forwardRef<
   { onKeyDown: (args: { event: KeyboardEvent }) => boolean },
   ResourceMentionsProps
 >((props, ref) => {
-  const t = useTranslations("common")
+  const t = useTranslations("common");
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const selectItem = (index: number) => {
     const item = props.items[index];
 
     if (item) {
-      props.command({ id: item.uri, label: item.title });
+      props.command({ id: item.uri, label: getResourceDisplayName(item) });
     }
   };
 
@@ -75,8 +79,16 @@ export const ResourceMentions = forwardRef<
             )}
             key={index}
             onClick={() => selectItem(index)}
+            title={getResourceDisplayName(item)}
           >
-            {item.title}
+            <span className="min-w-0 flex-1 truncate text-left">
+              {getResourceDisplayName(item)}
+            </span>
+            {getResourceTypeLabel(item) && (
+              <span className="text-muted-foreground bg-muted shrink-0 rounded px-1.5 py-0.5 text-xs">
+                {getResourceTypeLabel(item)}
+              </span>
+            )}
           </button>
         ))
       ) : (

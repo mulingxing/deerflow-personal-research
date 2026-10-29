@@ -18,8 +18,8 @@ This ensures tests don't leave behind temporary files that clutter the workspace
 
 from __future__ import annotations
 
+import atexit
 import shutil
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -96,7 +96,7 @@ def temp_error_examples_dir(project_root):
 
 @pytest.fixture
 def temp_load_skip_examples_dir(project_root):
-    """Create a temporary examples directory for load_skip tests with automatic cleanup."""
+    """Create a temporary examples directory for load_skip tests."""
     # Use the expected directory name for this test
     temp_dir_name = "examples_test_load_skip"
     temp_dir_path = project_root / temp_dir_name
@@ -113,7 +113,7 @@ def temp_load_skip_examples_dir(project_root):
 
 @pytest.fixture
 def temp_single_chunk_examples_dir(project_root):
-    """Create a temporary examples directory for single_chunk tests with automatic cleanup."""
+    """Create a temporary examples directory for single_chunk tests."""
     # Use the expected directory name for this test
     temp_dir_name = "examples_test_single_chunk"
     temp_dir_path = project_root / temp_dir_name
@@ -280,11 +280,12 @@ def test_list_resources_remote_success_and_dedup(monkeypatch):
             self.page_content = content
             self.metadata = meta
 
-    calls = {"similarity_search": 0}
+    calls = {"similarity_search": 0, "expr": ""}
 
     class RemoteClient:
         def similarity_search(self, query, k, expr):  # noqa: D401
             calls["similarity_search"] += 1
+            calls["expr"] = expr
             # Two docs with identical id to test dedup
             meta1 = {
                 retriever.id_field: "d1",
@@ -299,10 +300,11 @@ def test_list_resources_remote_success_and_dedup(monkeypatch):
             return [DocObj("c1", meta1), DocObj("c1_dup", meta2)]
 
     retriever.client = RemoteClient()
-    resources = retriever.list_resources("query text")
+    resources = retriever.list_resources()
     assert len(resources) == 1  # dedup applied
     assert resources[0].title.startswith("T1")
     assert calls["similarity_search"] == 1
+    assert 'source in ["examples", "uploaded"]' == calls["expr"]
 
 
 def test_list_resources_lite_success(monkeypatch):
@@ -316,17 +318,53 @@ def test_list_resources_lite_success(monkeypatch):
                     retriever.id_field: "idA",
                     retriever.title_field: "Alpha",
                     retriever.url_field: "u://a",
+                        "source": "uploaded",
+                    "file": "Alpha.pdf",
                 },
                 {
                     retriever.id_field: "idB",
                     retriever.title_field: "Beta",
                     retriever.url_field: "u://b",
+                        "source": "uploaded",
+                    "file": "Beta.docx",
                 },
             ]
 
     retriever.client = DummyMilvusLite()
     resources = retriever.list_resources()
     assert {r.title for r in resources} == {"Alpha", "Beta"}
+    assert {r.filename for r in resources} == {"Alpha.pdf", "Beta.docx"}
+
+
+def test_list_resources_lite_reads_all_iterator_pages(monkeypatch):
+    _patch_init(monkeypatch)
+    retriever = MilvusProvider()
+    state = {"closed": False}
+
+    class DummyIterator:
+        def __init__(self):
+            self.pages = iter(
+                [
+                    [{"id": "a", "title": "Alpha", "url": "milvus://a"}],
+                    [{"id": "b", "title": "Beta", "url": "milvus://b"}],
+                    [],
+                ]
+            )
+
+        def next(self):
+            return next(self.pages)
+
+        def close(self):
+            state["closed"] = True
+
+    class DummyMilvusLite:
+        def query_iterator(self, **kwargs):
+            assert kwargs["filter"] == 'source in ["examples", "uploaded"]'
+            return DummyIterator()
+
+    retriever.client = DummyMilvusLite()
+    assert {item.title for item in retriever.list_resources()} == {"Alpha", "Beta"}
+    assert state["closed"] is True
 
 
 def test_query_relevant_documents_lite_success(monkeypatch):
@@ -338,8 +376,9 @@ def test_query_relevant_documents_lite_success(monkeypatch):
 
     class DummyMilvusLite:
         def search(
-            self, collection_name, data, anns_field, param, limit, output_fields
+            self, collection_name, data, anns_field, param, limit, output_fields, filter
         ):  # noqa: D401
+            assert 'id in ["d2"]' in filter
             # Simulate two result entries
             return [
                 [
@@ -384,7 +423,8 @@ def test_query_relevant_documents_remote_success(monkeypatch):
             self.metadata = meta
 
     class RemoteClient:
-        def similarity_search_with_score(self, query, k):  # noqa: D401
+        def similarity_search_with_score(self, query, k, expr):  # noqa: D401
+            assert 'id in ["d1"]' in expr
             return [
                 (
                     DocObj(
@@ -541,6 +581,58 @@ def test_insert_document_chunk_remote(monkeypatch):
     assert added["meta"][0][retriever.id_field] == "idx"
 
 
+def test_upload_parsed_chunks_retains_source_location(monkeypatch):
+    _patch_init(monkeypatch)
+    retriever = MilvusProvider()
+    inserted = []
+
+    class DummyMilvusLite:
+        def query(self, **kwargs):
+            return []
+
+        def insert(self, collection_name, data):
+            inserted.extend(data)
+
+    retriever.client = DummyMilvusLite()
+    uploaded = retriever.ingest_file(
+        "论文内容".encode("utf-8"),
+        "paper.pdf",
+        chunks=[{"content": "论文内容", "page_number": 7, "section": "实验"}],
+    )
+
+    assert uploaded.title == "paper"
+    assert uploaded.filename == "paper.pdf"
+    assert len(inserted) == 1
+    assert inserted[0][retriever.url_field] == uploaded.uri
+    assert inserted[0]["source"] == "uploaded"
+    assert inserted[0]["file"] == "paper.pdf"
+    assert inserted[0]["page_number"] == 7
+    assert inserted[0]["section"] == "实验"
+    assert inserted[0]["resource_id"] in uploaded.uri
+
+
+def test_upload_reports_chunk_progress(monkeypatch):
+    _patch_init(monkeypatch)
+    retriever = MilvusProvider()
+    progress = []
+
+    class DummyMilvusLite:
+        def query(self, **kwargs):
+            return []
+
+        def insert(self, collection_name, data):
+            pass
+
+    retriever.client = DummyMilvusLite()
+    retriever.ingest_file(
+        b"",
+        "book.docx",
+        chunks=[{"content": f"Section {index}"} for index in range(9)],
+        progress_callback=lambda done, total: progress.append((done, total)),
+    )
+    assert progress == [(8, 9), (9, 9)]
+
+
 def test_connect_lite_and_error(monkeypatch):
     # patch MilvusClient to a dummy
     class FakeMilvusClient:
@@ -583,6 +675,7 @@ def test_connect_remote(monkeypatch):
     retriever = MilvusProvider()
     retriever._connect()
     assert created["collection_name"] == retriever.collection_name
+    assert created["enable_dynamic_field"] is True
 
 
 def test_list_resources_remote_failure(monkeypatch):
@@ -905,9 +998,6 @@ def test_load_example_files_single_chunk_no_suffix(
 
 
 # Clean up test database file after tests
-import atexit
-
-
 def cleanup_test_database():
     """Clean up milvus_demo.db file created during testing."""
     import os

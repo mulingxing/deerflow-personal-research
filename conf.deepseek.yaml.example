@@ -1,0 +1,17 @@
+# Copy this file to conf.yaml. Read the key from the root .env file.
+# Model name checked against the official DeepSeek API docs on 2026-10-20.
+BASIC_MODEL:
+  base_url: https://api.deepseek.com
+  model: deepseek-flash
+  api_key: $DEEPSEEK_API_KEY
+  max_retries: 2
+  timeout: 120
+  max_tokens: 8192
+  token_limit: 100000
+  extra_body:
+    thinking:
+      type: disabled
+
+# The initial setup uses the BASIC_MODEL for every role.
+# Thinking mode is deliberately off for the original ChatOpenAI tool loop.
+# Do not enable the UI's Deep Thinking option until REASONING_MODEL is configured.

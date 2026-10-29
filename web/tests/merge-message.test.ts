@@ -297,6 +297,36 @@ describe("mergeMessage", () => {
       expect(result2.toolCalls?.[0]?.argsChunks).toBeUndefined();
     });
 
+    it("parses recoverable tool arguments without a development error overlay", () => {
+      const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const message = createBaseMessage();
+        message.toolCalls = [
+          createToolCall({
+            id: "call-1",
+            name: "search",
+            argsChunks: ['{"query":"test"} trailing text'],
+          }),
+        ];
+        const finishEvent: ChatEvent = {
+          type: "message_chunk",
+          data: {
+            id: "test-msg-1",
+            thread_id: "thread-1",
+            agent: "researcher",
+            role: "assistant",
+            finish_reason: "tool_calls",
+          },
+        };
+
+        const result = mergeMessage(message, finishEvent);
+        expect(result.toolCalls?.[0]?.args).toEqual({ query: "test" });
+        expect(consoleError).not.toHaveBeenCalled();
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
     it("should convert escaped characters in args", () => {
       const message = createBaseMessage();
       message.toolCalls = [

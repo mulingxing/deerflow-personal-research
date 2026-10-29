@@ -3,9 +3,11 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
@@ -168,7 +170,7 @@ class MilvusRetriever(Retriever):
 
         schema = CollectionSchema(
             fields=fields,
-            description=f"Collection for DeerFlow RAG documents: {self.collection_name}",
+            description=f"DeerFlow RAG documents: {self.collection_name}",
             enable_dynamic_field=True,  # Allow additional dynamic metadata fields
         )
         return schema
@@ -287,28 +289,32 @@ class MilvusRetriever(Retriever):
                 return line[2:].strip()
 
         # Fallback to filename without extension
-        return filename.replace(".md", "").replace("_", " ").title()
+        return Path(filename).stem.replace("_", " ").title()
 
     def _split_content(self, content: str) -> List[str]:
-        """Split long markdown text into paragraph-based chunks."""
-        if len(content) <= self.chunk_size:
-            return [content]
+        """按段落切块，并保证超长段落也不会超过目标长度。"""
+        limit = max(1, self.chunk_size)
+        chunks: List[str] = []
+        current = ""
 
-        chunks = []
-        paragraphs = content.split("\n\n")
-        current_chunk = ""
+        for raw_paragraph in content.split("\n\n"):
+            paragraph = raw_paragraph.strip()
+            if not paragraph:
+                continue
 
-        for paragraph in paragraphs:
-            if len(current_chunk) + len(paragraph) <= self.chunk_size:
-                current_chunk += paragraph + "\n\n"
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = paragraph + "\n\n"
+            if current and len(current) + 2 + len(paragraph) > limit:
+                chunks.append(current)
+                current = ""
 
-        if current_chunk:
-            chunks.append(current_chunk.strip())
+            while len(paragraph) > limit:
+                chunks.append(paragraph[:limit])
+                paragraph = paragraph[limit:]
 
+            if paragraph:
+                current = f"{current}\n\n{paragraph}" if current else paragraph
+
+        if current:
+            chunks.append(current)
         return chunks
 
     def _get_existing_document_ids(self) -> Set[str]:
@@ -328,7 +334,7 @@ class MilvusRetriever(Retriever):
                 }
             else:
                 # For LangChain Milvus, we can't easily query all IDs
-                # Return empty set to allow re-insertion (LangChain will handle duplicates)
+                # Return no IDs so LangChain can handle duplicate inserts.
                 return set()
         except Exception:
             return set()
@@ -389,13 +395,14 @@ class MilvusRetriever(Retriever):
                 if self.password:
                     connection_args["password"] = self.password
 
-                # Create LangChain client (it will handle collection creation automatically)
+                # LangChain creates the collection when needed.
                 self.client = LangchainMilvus(
                     embedding_function=self.embedding_model,
                     collection_name=self.collection_name,
                     connection_args=connection_args,
-                    # optional (if collection already exists with different schema, be careful)
+                    # Existing collections may use a different schema.
                     drop_old=False,
+                    enable_dynamic_field=True,
                 )
         except Exception as e:
             raise ConnectionError(f"Failed to connect to Milvus: {str(e)}")
@@ -419,7 +426,7 @@ class MilvusRetriever(Retriever):
 
             if not text.strip():
                 raise ValueError("Text cannot be empty or only whitespace")
-            # Unified embedding interface (OpenAIEmbeddings or DashscopeEmbeddings wrapper)
+            # Both supported embedding providers expose the same interface.
             embeddings = self.embedding_model.embed_query(text=text.strip())
 
             # Validate output
@@ -431,23 +438,10 @@ class MilvusRetriever(Retriever):
             raise RuntimeError(f"Failed to generate embedding: {str(e)}")
 
     def list_resources(self, query: Optional[str] = None) -> List[Resource]:
-        """List available resource summaries.
-
-        Strategy:
-            1. If connected to Milvus Lite: query stored document metadata.
-            2. If LangChain client: perform a lightweight similarity search
-               using either the provided ``query`` or a zero vector to fetch
-               candidate docs (mocked in tests).
-            3. Append local markdown example titles (non-ingested) for user
-               discoverability.
-
-        Args:
-            query: Optional search text to bias resource ordering.
-
-        Returns:
-            List of ``Resource`` objects.
-        """
+        """根据向量库中的元数据列出示例和上传文件。"""
         resources: List[Resource] = []
+        seen_uris: Set[str] = set()
+        name_query = (query or "").strip().casefold()
 
         # Ensure connection established
         if not self.client:
@@ -458,54 +452,37 @@ class MilvusRetriever(Retriever):
                 return self._list_local_markdown_resources()
 
         try:
-            if self._is_milvus_lite():
-                # Query limited metadata. Empty filter returns up to limit docs.
-                results = self.client.query(
-                    collection_name=self.collection_name,
-                    filter="source == 'examples'",
-                    output_fields=[self.id_field, self.title_field, self.url_field],
-                    limit=100,
+            for meta in self._iter_stored_resource_rows(query):
+                uri = (
+                    meta.get(self.url_field, "")
+                    or f"milvus://{meta.get(self.id_field, '')}"
                 )
-                for r in results:
-                    resources.append(
-                        Resource(
-                            uri=r.get(self.url_field, "")
-                            or f"milvus://{r.get(self.id_field, '')}",
-                            title=r.get(self.title_field, "")
-                            or r.get(self.id_field, "Unnamed"),
-                            description="Stored Milvus document",
-                        )
-                    )
-            else:
-                # Use similarity_search_by_vector for lightweight listing.
-                # If a query is provided embed it; else use a zero vector.
-                docs: Iterable[Any] = self.client.similarity_search(
-                    query,
-                    k=100,
-                    expr="source == 'examples'",  # Limit to 100 results
+                title = meta.get(self.title_field, "") or meta.get(
+                    self.id_field, "Unnamed"
                 )
-                for d in docs:
-                    meta = getattr(d, "metadata", {}) or {}
-                    # check if the resource is in the list of resources
-                    if resources and any(
-                        r.uri == meta.get(self.url_field, "")
-                        or r.uri == f"milvus://{meta.get(self.id_field, '')}"
-                        for r in resources
-                    ):
-                        continue
-                    resources.append(
-                        Resource(
-                            uri=meta.get(self.url_field, "")
-                            or f"milvus://{meta.get(self.id_field, '')}",
-                            title=meta.get(self.title_field, "")
-                            or meta.get(self.id_field, "Unnamed"),
-                            description="Stored Milvus document",
-                        )
+                if uri in seen_uris:
+                    continue
+                if name_query and not any(
+                    name_query in str(value).casefold()
+                    for value in (title, meta.get("file", ""))
+                ):
+                    continue
+                seen_uris.add(uri)
+                resources.append(
+                    Resource(
+                        uri=uri,
+                        title=title,
+                        description=(
+                            "Uploaded file"
+                            if meta.get("source") == "uploaded"
+                            else "Stored Milvus document"
+                        ),
+                        filename=(
+                            meta.get("file") or None
+                            if meta.get("source") == "uploaded"
+                            else None
+                        ),
                     )
-                logger.info(
-                    "Succeed listed %d resources from Milvus collection: %s",
-                    len(resources),
-                    self.collection_name,
                 )
         except Exception:
             logger.warning(
@@ -515,10 +492,41 @@ class MilvusRetriever(Retriever):
             return self._list_local_markdown_resources()
         return resources
 
+    def _iter_stored_resource_rows(self, query: Optional[str]):
+        """Milvus 迭代读取元数据，避免大文件的分块占满列表上限。"""
+        source_filter = 'source in ["examples", "uploaded"]'
+        fields = [self.id_field, self.title_field, self.url_field, "source", "file"]
+        if self._is_milvus_lite():
+            target = self.client
+            params = {"collection_name": self.collection_name, "filter": source_filter}
+        elif getattr(self.client, "col", None) is not None:
+            target = self.client.col
+            params = {"expr": source_filter}
+        else:
+            # 旧版客户端没有元数据查询入口时保留兼容路径。
+            docs: Iterable[Any] = self.client.similarity_search(
+                query or " ", k=100, expr=source_filter
+            )
+            for doc in docs:
+                yield getattr(doc, "metadata", {}) or {}
+            return
+
+        if hasattr(target, "query_iterator"):
+            iterator = target.query_iterator(
+                **params, output_fields=fields, batch_size=1000
+            )
+            try:
+                while rows := iterator.next():
+                    yield from rows
+            finally:
+                iterator.close()
+        else:
+            yield from target.query(**params, output_fields=fields, limit=1000)
+
     async def list_resources_async(self, query: Optional[str] = None) -> List[Resource]:
         """
         Asynchronous version of list_resources.
-        Wraps the synchronous implementation in asyncio.to_thread() to avoid blocking the event loop.
+        Run the synchronous implementation in a worker thread.
         """
         return await asyncio.to_thread(self.list_resources, query)
 
@@ -576,36 +584,48 @@ class MilvusRetriever(Retriever):
 
             # Get embeddings for the query
             query_embedding = self._get_embedding(query)
+            resource_filter = self._build_resource_filter(resources)
+            if resources and not resource_filter:
+                return []
 
             # For Milvus Lite, use MilvusClient directly
             if self._is_milvus_lite():
                 # Perform vector search
-                search_results = self.client.search(
-                    collection_name=self.collection_name,
-                    data=[query_embedding],
-                    anns_field=self.vector_field,
-                    param={"metric_type": "IP", "params": {"nprobe": 10}},
-                    limit=self.top_k,
-                    output_fields=[
+                search_kwargs: Dict[str, Any] = {
+                    "collection_name": self.collection_name,
+                    "data": [query_embedding],
+                    "anns_field": self.vector_field,
+                    "param": {"metric_type": "IP", "params": {"nprobe": 10}},
+                    "limit": self.top_k,
+                    "output_fields": [
                         self.id_field,
                         self.content_field,
                         self.title_field,
                         self.url_field,
+                        "resource_id",
+                        "page_number",
+                        "section",
                     ],
-                )
+                }
+                if resource_filter:
+                    # 必须在 top_k 排序前过滤资料。
+                    search_kwargs["filter"] = resource_filter
+                search_results = self.client.search(**search_kwargs)
 
                 documents = {}
 
                 for result_list in search_results:
                     for result in result_list:
                         entity = result.get("entity", {})
-                        doc_id = entity.get(self.id_field, "")
+                        doc_id = entity.get("resource_id") or entity.get(
+                            self.id_field, ""
+                        )
                         content = entity.get(self.content_field, "")
                         title = entity.get(self.title_field, "")
                         url = entity.get(self.url_field, "")
                         score = result.get("distance", 0.0)
 
-                        # Skip if resource filtering is requested and this doc is not in the list
+                        # Keep results from selected resources only.
                         if resources:
                             doc_in_resources = False
                             for resource in resources:
@@ -624,27 +644,37 @@ class MilvusRetriever(Retriever):
                             )
 
                         # Add chunk to document
-                        chunk = Chunk(content=content, similarity=score)
+                        chunk = Chunk(
+                            content=content,
+                            similarity=score,
+                            page_number=entity.get("page_number"),
+                            section=entity.get("section"),
+                        )
                         documents[doc_id].chunks.append(chunk)
 
                 return list(documents.values())
 
             else:
                 # For LangChain Milvus, use similarity search
+                search_kwargs = {"query": query, "k": self.top_k}
+                if resource_filter:
+                    search_kwargs["expr"] = resource_filter
                 search_results = self.client.similarity_search_with_score(
-                    query=query, k=self.top_k
+                    **search_kwargs
                 )
 
                 documents = {}
 
                 for doc, score in search_results:
                     metadata = doc.metadata or {}
-                    doc_id = metadata.get(self.id_field, "")
+                    doc_id = metadata.get("resource_id") or metadata.get(
+                        self.id_field, ""
+                    )
                     title = metadata.get(self.title_field, "")
                     url = metadata.get(self.url_field, "")
                     content = doc.page_content
 
-                    # Skip if resource filtering is requested and this doc is not in the list
+                    # Keep results from selected resources only.
                     if resources:
                         doc_in_resources = False
                         for resource in resources:
@@ -661,7 +691,12 @@ class MilvusRetriever(Retriever):
                         )
 
                     # Add chunk to document
-                    chunk = Chunk(content=content, similarity=score)
+                    chunk = Chunk(
+                        content=content,
+                        similarity=score,
+                        page_number=metadata.get("page_number"),
+                        section=metadata.get("section"),
+                    )
                     documents[doc_id].chunks.append(chunk)
 
                 return list(documents.values())
@@ -669,16 +704,24 @@ class MilvusRetriever(Retriever):
         except Exception as e:
             raise RuntimeError(f"Failed to query documents from Milvus: {str(e)}")
 
+    def _build_resource_filter(self, resources: List[Resource]) -> str:
+        """用所选资料的 URI 构造服务端过滤表达式。"""
+        uris = sorted({resource.uri for resource in resources if resource.uri})
+        if not uris:
+            return ""
+        ids = sorted({uri.rsplit("/", 1)[-1] for uri in uris})
+        url_values = ", ".join(json.dumps(uri, ensure_ascii=False) for uri in uris)
+        id_values = ", ".join(json.dumps(doc_id, ensure_ascii=False) for doc_id in ids)
+        return f"{self.url_field} in [{url_values}] or {self.id_field} in [{id_values}]"
+
     async def query_relevant_documents_async(
         self, query: str, resources: Optional[List[Resource]] = None
     ) -> List[Document]:
         """
         Asynchronous version of query_relevant_documents.
-        Wraps the synchronous implementation in asyncio.to_thread() to avoid blocking the event loop.
+        Run the synchronous implementation in a worker thread.
         """
-        return await asyncio.to_thread(
-            self.query_relevant_documents, query, resources
-        )
+        return await asyncio.to_thread(self.query_relevant_documents, query, resources)
 
     def create_collection(self) -> None:
         """Public hook ensuring collection exists (explicit initialization)."""
@@ -726,9 +769,7 @@ class MilvusRetriever(Retriever):
                     logger.info("Cleared %d existing example documents", len(doc_ids))
             else:
                 # For LangChain Milvus, we can't easily delete by metadata
-                logger.info(
-                    "Clearing existing examples not supported for LangChain Milvus client"
-                )
+                logger.info("Clearing examples is not supported by this Milvus client")
 
         except Exception as e:
             logger.warning("Could not clear existing examples: %s", e)
@@ -831,11 +872,15 @@ class MilvusRetriever(Retriever):
 
     def _check_duplicate_file(self, filename: str) -> bool:
         """Check if a file with the same name has been uploaded before."""
+        file_filter = (
+            f"file == {json.dumps(filename, ensure_ascii=False)} "
+            'and source == "uploaded"'
+        )
         try:
             if self._is_milvus_lite():
                 results = self.client.query(
                     collection_name=self.collection_name,
-                    filter=f"file == '{filename}' and source == 'uploaded'",
+                    filter=file_filter,
                     output_fields=[self.id_field],
                     limit=1,
                 )
@@ -845,7 +890,7 @@ class MilvusRetriever(Retriever):
                 docs = self.client.similarity_search(
                     "",
                     k=1,
-                    expr=f"file == '{filename}' and source == 'uploaded'",
+                    expr=file_filter,
                 )
                 return len(docs) > 0
         except Exception:
@@ -853,51 +898,7 @@ class MilvusRetriever(Retriever):
             return False
 
     def ingest_file(self, file_content: bytes, filename: str, **kwargs) -> Resource:
-        """Ingest a file into the Milvus vector store for RAG retrieval.
-
-        This method processes an uploaded file, splits it into chunks if necessary,
-        generates embeddings, and stores them in the configured Milvus collection.
-
-        Args:
-            file_content: Raw bytes of the file to ingest. Must be valid UTF-8
-                encoded text content (e.g., markdown or plain text files).
-            filename: Original filename. Used for title extraction, metadata storage,
-                and URI construction. The filename is sanitized to remove special
-                characters and path separators before use.
-            **kwargs: Reserved for future use. Currently unused but accepted for
-                forward compatibility (e.g., custom metadata, chunking options).
-
-        Returns:
-            Resource: Object containing:
-                - uri: Milvus URI in format ``milvus://{collection}/{filename}``
-                - title: Extracted from first markdown heading or derived from filename
-                - description: "Uploaded file" or "Uploaded file (new version)"
-
-        Raises:
-            ValueError: If file_content cannot be decoded as UTF-8 text. This typically
-                occurs when attempting to upload binary files (images, PDFs, etc.)
-                which are not supported.
-            RuntimeError: If document chunk insertion fails due to embedding generation
-                errors, Milvus connection issues, or storage failures.
-            ConnectionError: If unable to establish connection to Milvus server.
-
-        Supported file types:
-            - Markdown files (.md): Title extracted from first ``# heading``
-            - Plain text files (.txt): Title derived from filename
-
-        Duplicate handling:
-            Files with the same name can be uploaded multiple times. Each upload
-            creates a new document with a unique ID (includes timestamp). The
-            description field indicates if this is a new version of an existing
-            file. Old versions are retained in storage.
-
-        Example:
-            >>> retriever = MilvusRetriever()
-            >>> with open("document.md", "rb") as f:
-            ...     resource = retriever.ingest_file(f.read(), "document.md")
-            >>> print(resource.uri)
-            milvus://documents/document.md
-        """
+        """将 UTF-8 文本或已解析的分页文本片段写入 Milvus。"""
         # Check connection
         if not self.client:
             self._connect()
@@ -905,54 +906,86 @@ class MilvusRetriever(Retriever):
         # Sanitize filename to prevent issues with special characters and path traversal
         safe_filename = self._sanitize_filename(filename)
         if safe_filename != filename:
-            logger.debug(
-                "Filename sanitized: '%s' -> '%s'", filename, safe_filename
-            )
+            logger.debug("Filename sanitized: '%s' -> '%s'", filename, safe_filename)
 
-        # Decode content (only UTF-8 text files supported)
-        try:
-            content = file_content.decode("utf-8")
-        except UnicodeDecodeError:
-            raise ValueError(
-                "Only UTF-8 encoded text files are supported (e.g., .md, .txt). "
-                "Binary files such as images, PDFs, or Word documents cannot be processed."
-            )
+        supplied_chunks = kwargs.get("chunks")
+        if supplied_chunks is None:
+            try:
+                content = file_content.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("Only UTF-8 text files are supported") from exc
+            supplied_chunks = [{"content": content}]
+
+        if not isinstance(supplied_chunks, list):
+            raise ValueError("chunks must be a list")
+
+        prepared_chunks: List[Dict[str, Any]] = []
+        for item in supplied_chunks:
+            if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+                raise ValueError("Each chunk must contain text content")
+            for piece in self._split_content(item["content"]):
+                prepared_chunks.append(
+                    {
+                        "content": piece,
+                        "page_number": item.get("page_number"),
+                        "section": item.get("section"),
+                    }
+                )
+
+        if not prepared_chunks:
+            raise ValueError("The file contains no readable text")
 
         # Check for existing file with same name
         is_duplicate = self._check_duplicate_file(safe_filename)
         if is_duplicate:
             logger.info(
-                "File '%s' was previously uploaded. Creating new version.", safe_filename
+                "File '%s' was previously uploaded. Creating new version.",
+                safe_filename,
             )
 
-        # Generate unique doc_id using filename, content length, and timestamp
-        # Timestamp ensures uniqueness even for identical re-uploads
-        timestamp = int(time.time() * 1000)  # millisecond precision
-        content_hash = hashlib.md5(
-            f"{safe_filename}_{len(content)}_{timestamp}".encode()
-        ).hexdigest()[:8]
-        base_name = safe_filename.rsplit(".", 1)[0] if "." in safe_filename else safe_filename
-        doc_id = f"uploaded_{base_name}_{content_hash}"
+        # 每次上传拥有独立 URI，重名文件的不同版本仍可分别检索。
+        timestamp = int(time.time() * 1000)
+        doc_id = f"uploaded_{uuid.uuid4().hex}"
+        uri = f"milvus://{self.collection_name}/{doc_id}"
+        title = (
+            self._extract_title_from_markdown(
+                prepared_chunks[0]["content"], safe_filename
+            )
+            if safe_filename.lower().endswith(".md")
+            else Path(safe_filename).stem.replace("_", " ")
+        )
 
-        title = self._extract_title_from_markdown(content, safe_filename)
-        chunks = self._split_content(content)
-
-        # Insert chunks
-        for i, chunk in enumerate(chunks):
-            chunk_id = f"{doc_id}_chunk_{i}" if len(chunks) > 1 else doc_id
+        progress_callback = kwargs.get("progress_callback")
+        for i, item in enumerate(prepared_chunks):
+            chunk_id = f"{doc_id}_chunk_{i}"
+            metadata = {
+                "source": "uploaded",
+                "file": safe_filename,
+                "resource_id": doc_id,
+                "timestamp": timestamp,
+            }
+            if item["page_number"] is not None:
+                metadata["page_number"] = item["page_number"]
+            if item["section"]:
+                metadata["section"] = item["section"]
             self._insert_document_chunk(
                 doc_id=chunk_id,
-                content=chunk,
+                content=item["content"],
                 title=title,
-                url=f"milvus://{self.collection_name}/{safe_filename}",
-                metadata={"source": "uploaded", "file": safe_filename, "timestamp": timestamp},
+                url=uri,
+                metadata=metadata,
             )
+            if progress_callback and (
+                (i + 1) % 8 == 0 or i + 1 == len(prepared_chunks)
+            ):
+                progress_callback(i + 1, len(prepared_chunks))
 
         description = "Uploaded file (new version)" if is_duplicate else "Uploaded file"
         return Resource(
-            uri=f"milvus://{self.collection_name}/{safe_filename}",
+            uri=uri,
             title=title,
             description=description,
+            filename=safe_filename,
         )
 
     def __del__(self) -> None:  # pragma: no cover - best-effort cleanup

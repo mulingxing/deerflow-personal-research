@@ -936,7 +936,9 @@ def test_human_feedback_node_json_decode_error_second_iteration(
     ):
         result = human_feedback_node(state, mock_config)
         assert isinstance(result, Command)
-        assert result.goto == "reporter"
+        # 无效计划没有可供 reporter 使用的 title/steps，应明确结束。
+        assert result.goto == "__end__"
+        assert "invalid" in result.update["messages"][0].content
 
 
 def test_human_feedback_node_not_enough_context(

@@ -60,31 +60,23 @@ Structure your report in the following format:
    - Always use the first level heading for the title.
    - A concise title for the report.
 
-2. **Key Citations**
-   - List all references IMMEDIATELY after the title, before any analysis content.
-   - This section MUST come early to ensure all URLs are accurate and verifiable.
-   - Only use URLs that appear in the provided source material or 'Available Source References'.
-   - Include an empty line between each citation for better readability.
-   - Format: `- [Source Title](URL)`
-   - NEVER fabricate or guess URLs. If a URL is not available, omit it.
-
-3. **Key Points**
+2. **Key Points**
    - A bulleted list of the most important findings (4-6 points).
    - Each point should be concise (1-2 sentences).
    - Focus on the most significant and actionable information.
 
-4. **Overview**
+3. **Overview**
    - A brief introduction to the topic (1-2 paragraphs).
    - Provide context and significance.
 
-5. **Detailed Analysis**
+4. **Detailed Analysis**
    - Organize information into logical sections with clear headings.
    - Include relevant subsections as needed.
    - Present information in a structured, easy-to-follow manner.
    - Highlight unexpected or particularly noteworthy details.
    - **Including images from the previous steps in the report is very helpful.**
 
-6. **Survey Note** (for more comprehensive reports)
+5. **Survey Note** (for more comprehensive reports)
    {% if report_style == "academic" %}
    - **Literature Review & Theoretical Framework**: Comprehensive analysis of existing research and theoretical foundations
    - **Methodology & Data Analysis**: Detailed examination of research methods and analytical approaches
@@ -140,10 +132,10 @@ Structure your report in the following format:
    - This section is optional for shorter reports.
    {% endif %}
 
-7. **Key Citations** (repeated at end for completeness)
-   - Repeat the same citation list from section 2 at the end of the report.
-   - This ensures references are accessible both at the beginning and end.
-   - ONLY use URLs from the provided source material. NEVER fabricate URLs.
+6. **References**
+   - List only the numbered sources actually used in the report.
+   - Use exact web URLs from the provided source evidence. Never fabricate URLs.
+   - For uploaded documents, show the title and page or section without a web link.
 
 # Writing Guidelines
 
@@ -254,7 +246,7 @@ Structure your report in the following format:
    - Structure tables with clear headers and aligned columns.
    - Use links, lists, inline-code and other formatting options to make the report more readable.
    - Add emphasis for important points.
-   - DO NOT include inline citations in the text.
+   - Add a numbered inline citation beside factual claims when a retrieved source supports them.
    - Use horizontal rules (---) to separate major sections.
    - Track the sources of information but keep the main text clean and readable.
 
@@ -380,12 +372,12 @@ Structure your report in the following format:
 
 - If uncertain about any information, acknowledge the uncertainty.
 - Only include verifiable facts from the provided source material.
-- Structure your report to include: Key Citations, Key Points, Overview, Detailed Analysis, Survey Note (optional), and References.
+- Structure your report to include: Key Points, Overview, Detailed Analysis, Survey Note (optional), and References.
 - Use inline citations [n] in the text where appropriate.
-- The number n must correspond to the source index in the provided 'Available Source References' list.
-- NEVER fabricate or guess URLs. Only use URLs that appear in the provided source material or 'Available Source References'.
+- The number n must match a `source_id` in the provided source evidence JSON.
+- NEVER fabricate or guess URLs. Only use URLs from that source evidence.
 - Make the inline citation a link to the reference at the bottom using the format `[[n]](#ref-n)`.
-- In the References section at the end, list the sources using the format `[[n]](#citation-target-n) **[Title](URL)**`.
+- In the References section, use `[[n]](#citation-target-n) **[Title](URL)**` for web sources. For uploaded documents, write the title and page or section as plain text; the app displays their source details separately.
 - PRIORITIZE USING MARKDOWN TABLES for data presentation and comparison. Use tables whenever presenting comparative data, statistics, features, or options.
 - Include images using `![Image Description](image_url)`. The images should be in the middle of the report, not at the end or separate section.
 - The included images should **only** be from the information gathered **from the previous steps**. **Never** include images that are not from the previous steps

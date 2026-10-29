@@ -1,8 +1,6 @@
 // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 // SPDX-License-Identifier: MIT
 
-import { parse as bestEffortParse } from "best-effort-json-parser";
-
 import type {
   ChatEvent,
   InterruptEvent,
@@ -12,6 +10,7 @@ import type {
   ToolCallsEvent,
 } from "../api";
 import { deepClone } from "../utils/deep-clone";
+import { parseBestEffortJSON } from "../utils/json";
 
 import type { Message } from "./types";
 
@@ -28,7 +27,7 @@ function safeParseToolArgs(argsString: string): Record<string, unknown> {
   } catch {
     // If standard parsing fails, use best-effort parser for incomplete JSON
     try {
-      const result = bestEffortParse(argsString);
+      const result = parseBestEffortJSON(argsString);
       // Ensure we return an object
       if (result && typeof result === "object" && !Array.isArray(result)) {
         return result as Record<string, unknown>;

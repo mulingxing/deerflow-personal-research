@@ -4,6 +4,7 @@
 import { Check, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
 import ReactMarkdown, {
+  defaultUrlTransform,
   type Options as ReactMarkdownOptions,
 } from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -14,7 +15,10 @@ import "katex/dist/katex.min.css";
 import { Button } from "~/components/ui/button";
 import { rehypeSplitWordsIntoSpans } from "~/core/rehype";
 import { katexOptions } from "~/core/markdown/katex";
-import { autoFixMarkdown, normalizeMathForDisplay } from "~/core/utils/markdown";
+import {
+  autoFixMarkdown,
+  normalizeMathForDisplay,
+} from "~/core/utils/markdown";
 import { cn } from "~/lib/utils";
 
 import Image from "./image";
@@ -44,16 +48,16 @@ export function Markdown({
     const map = new Map<string, number>();
     citations?.forEach((c, index) => {
       if (!c.url) return;
-      
+
       // Add exact match
       map.set(c.url, index);
-      
+
       // Add decoded match
       try {
         const decoded = decodeURIComponent(c.url);
         if (decoded !== c.url) map.set(decoded, index);
       } catch {}
-      
+
       // Add encoded match
       try {
         const encoded = encodeURI(c.url);
@@ -76,7 +80,7 @@ export function Markdown({
           return (
             <span
               id={`ref-${index}`}
-              className="font-bold text-primary scroll-mt-20"
+              className="text-primary scroll-mt-20 font-bold"
             >
               [{index}]
             </span>
@@ -90,13 +94,16 @@ export function Markdown({
           return (
             <a
               href={hrefStr}
-              className="text-primary hover:underline cursor-pointer marker-link"
+              className="text-primary marker-link cursor-pointer hover:underline"
               onClick={(e) => {
                 e.preventDefault();
                 const targetId = `ref-${linkMatch[1]}`;
                 const element = document.getElementById(targetId);
                 if (element) {
-                  element.scrollIntoView({ behavior: "smooth", block: "start" });
+                  element.scrollIntoView({
+                    behavior: "smooth",
+                    block: "start",
+                  });
                 }
               }}
             >
@@ -144,6 +151,14 @@ export function Markdown({
             </CitationLink>
           );
         }
+        if (/^(?:rag|qdrant|milvus):\/\//i.test(hrefStr)) {
+          // 即使来源事件尚未到达，也不能把本地 URI 当网页链接打开。
+          return (
+            <CitationLink href={hrefStr} citations={citations}>
+              {children}
+            </CitationLink>
+          );
+        }
         // Otherwise fall back to regular Link
         return (
           <Link href={href} checkLinkCredibility={checkLinkCredibility}>
@@ -159,11 +174,12 @@ export function Markdown({
     };
   }, [checkLinkCredibility, citations, citationMap]);
 
-  const rehypePlugins = useMemo<NonNullable<ReactMarkdownOptions["rehypePlugins"]>>(() => {
-    const plugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [[
-      rehypeKatex,
-      katexOptions,
-    ]];
+  const rehypePlugins = useMemo<
+    NonNullable<ReactMarkdownOptions["rehypePlugins"]>
+  >(() => {
+    const plugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [
+      [rehypeKatex, katexOptions],
+    ];
     if (animated) {
       plugins.push(rehypeSplitWordsIntoSpans);
     }
@@ -176,6 +192,11 @@ export function Markdown({
         rehypePlugins={rehypePlugins}
         components={components}
         {...props}
+        urlTransform={(url, key) =>
+          key === "href" && /^(?:rag|qdrant|milvus):\/\//i.test(url)
+            ? url
+            : defaultUrlTransform(url)
+        }
       >
         {autoFixMarkdown(
           dropMarkdownQuote(normalizeMathForDisplay(children ?? "")) ?? "",
@@ -220,8 +241,6 @@ function CopyButton({ content }: { content: string }) {
   );
 }
 
-
-
 function dropMarkdownQuote(markdown?: string | null): string | null {
   if (!markdown) return null;
 
@@ -232,19 +251,19 @@ function dropMarkdownQuote(markdown?: string | null): string | null {
   ];
 
   let result = markdown;
-  
+
   for (const { prefix, suffix, prefixLen } of patternsToRemove) {
     if (result.startsWith(prefix) && !result.endsWith(suffix)) {
       result = result.slice(prefixLen);
-      break;  // remove prefix without suffix only once
+      break; // remove prefix without suffix only once
     }
   }
-  
+
   let changed = true;
 
   while (changed) {
     changed = false;
-    
+
     for (const { prefix, suffix, prefixLen } of patternsToRemove) {
       let startIndex = 0;
       while ((startIndex = result.indexOf(prefix, startIndex)) !== -1) {
@@ -263,6 +282,6 @@ function dropMarkdownQuote(markdown?: string | null): string | null {
       }
     }
   }
-  
+
   return result;
 }

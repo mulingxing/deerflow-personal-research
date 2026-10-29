@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Annotated, Any, List, Optional, cast
 from uuid import uuid4
 
@@ -23,7 +24,7 @@ if _debug_mode:
     logging.getLogger("langchain").setLevel(logging.DEBUG)
     logging.getLogger("langgraph").setLevel(logging.DEBUG)
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from langchain_core.messages import AIMessageChunk, BaseMessage, ToolMessage
@@ -51,10 +52,12 @@ from src.ppt.graph.builder import build_graph as build_ppt_graph
 from src.prompt_enhancer.graph.builder import build_graph as build_prompt_enhancer_graph
 from src.prose.graph.builder import build_graph as build_prose_graph
 from src.eval import ReportEvaluator
-from src.rag.builder import build_retriever
+from src.rag.builder import build_retriever, close_retriever
+from src.rag.ingestion import parse_document
 from src.rag.milvus import load_examples as load_milvus_examples
 from src.rag.qdrant import load_examples as load_qdrant_examples
-from src.rag.retriever import Resource
+from src.rag.retriever import Resource, Retriever
+from src.rag.upload_jobs import UploadJobStore
 from src.server.chat_request import (
     ChatRequest,
     EnhancePromptRequest,
@@ -64,6 +67,7 @@ from src.server.chat_request import (
     TTSRequest,
 )
 from src.server.eval_request import EvaluateReportRequest, EvaluateReportResponse
+from src.server.history import history_store, router as history_router
 from src.server.config_request import ConfigResponse
 from src.server.mcp_request import MCPServerMetadataRequest, MCPServerMetadataResponse
 from src.server.mcp_utils import load_mcp_tools
@@ -71,6 +75,7 @@ from src.server.rag_request import (
     RAGConfigResponse,
     RAGResourceRequest,
     RAGResourcesResponse,
+    RAGUploadJobResponse,
 )
 from src.tools import VolcengineTTS
 from src.utils.json_utils import sanitize_args
@@ -79,7 +84,6 @@ from src.utils.log_sanitizer import (
     sanitize_log_input,
     sanitize_thread_id,
     sanitize_tool_name,
-    sanitize_user_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +117,8 @@ async def lifespan(app):
     global _pg_pool, _pg_checkpointer, _mongo_client, _mongo_checkpointer
 
     # ========== STARTUP ==========
+    # 仅真正启动服务时恢复中断会话；导入模块做检查不应改写用户历史。
+    history_store.recover_interrupted()
     try:
         asyncio.get_running_loop()
 
@@ -214,6 +220,9 @@ async def lifespan(app):
         _mongo_client.close()
         logger.info("Global MongoDB connection closed")
 
+    # 本地 Qdrant 占用目录锁；服务退出前释放，便于立即重启。
+    close_retriever()
+
 
 app = FastAPI(
     title="DeerFlow API",
@@ -221,6 +230,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.include_router(history_router)
 
 # Add CORS middleware
 # It's recommended to load the allowed origins from an environment variable
@@ -234,7 +244,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,  # Restrict to specific origins
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],  # Use the configured list of methods
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],  # Now allow all headers, but can be restricted further
 )
 # Load examples into RAG providers if configured
@@ -282,6 +292,7 @@ async def chat_stream(request: ChatRequest):
             request.max_clarification_rounds,
             request.locale,
             request.interrupt_before_tools,
+            conversation_history=request.model_dump()["conversation_history"],
         ),
         media_type="text/event-stream",
     )
@@ -789,6 +800,7 @@ async def _astream_workflow_generator(
     max_clarification_rounds: int,
     locale: str = "en-US",
     interrupt_before_tools: Optional[List[str]] = None,
+    conversation_history: Optional[List[dict]] = None,
 ):
     safe_thread_id = sanitize_thread_id(thread_id)
     safe_feedback = sanitize_log_input(interrupt_feedback) if interrupt_feedback else ""
@@ -804,8 +816,12 @@ async def _astream_workflow_generator(
     logger.debug(f"[{safe_thread_id}] Processing {len(messages)} initial messages")
     for message in messages:
         if isinstance(message, dict) and "content" in message:
-            safe_content = sanitize_user_content(message.get('content', ''))
-            logger.debug(f"[{safe_thread_id}] Sending initial message to client: {safe_content}")
+            # 私人资料相关问题可能出现在用户消息中，调试日志只记录长度。
+            logger.debug(
+                "[%s] Processing user message with %d characters",
+                safe_thread_id,
+                len(str(message.get("content") or "")),
+            )
             _process_initial_messages(message, thread_id)
 
     logger.debug(f"[{safe_thread_id}] Reconstructing clarification history")
@@ -817,13 +833,34 @@ async def _astream_workflow_generator(
     )
     latest_message_content = messages[-1]["content"] if messages else ""
     clarified_research_topic = clarified_topic or latest_message_content
-    safe_topic = sanitize_user_content(clarified_research_topic)
-    logger.debug(f"[{safe_thread_id}] Clarified research topic: {safe_topic}")
+    logger.debug(
+        "[%s] Clarified research topic has %d characters",
+        safe_thread_id,
+        len(str(clarified_research_topic)),
+    )
 
     # Prepare workflow input
     logger.debug(f"[{safe_thread_id}] Preparing workflow input")
+    # 旧会话压成一条背景消息；旧 user 轮次不能被当作本轮澄清回答。
+    history_lines = []
+    total_history_chars = 0
+    for item in conversation_history or []:
+        role = item.get("role")
+        content = item.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        excerpt = content.strip()[:3000]
+        if not excerpt or total_history_chars + len(excerpt) > 12000:
+            break
+        history_lines.append(f"{role}: {excerpt}")
+        total_history_chars += len(excerpt)
+    history_context = (
+        [{"role": "assistant", "content": "Previous conversation context:\n" + "\n\n".join(history_lines)}]
+        if history_lines
+        else []
+    )
     workflow_input = {
-        "messages": messages,
+        "messages": history_context + messages,
         "plan_iterations": 0,
         "final_report": "",
         "current_plan": None,
@@ -1044,27 +1081,39 @@ async def generate_podcast(request: GeneratePodcastRequest):
 @app.post("/api/ppt/generate")
 async def generate_ppt(request: GeneratePPTRequest):
     try:
-        report_content = request.content
-        print(report_content)
         workflow = build_ppt_graph()
-        final_state = workflow.invoke({"input": report_content, "locale": request.locale})
-        generated_file_path = final_state["generated_file_path"]
-        with open(generated_file_path, "rb") as f:
-            ppt_bytes = f.read()
+        # 本地 PPT 转换会调用浏览器，放在线程中避免阻塞其他 API 请求。
+        final_state = await asyncio.to_thread(
+            workflow.invoke,
+            {"input": request.content, "locale": request.locale, "theme": request.theme},
+        )
+        ppt_bytes = final_state["ppt_bytes"]
         return Response(
             content=ppt_bytes,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={
+                "Content-Disposition": "attachment; filename=deerflow-presentation.pptx"
+            },
         )
-    except Exception as e:
-        logger.exception(f"Error occurred during ppt generation: {str(e)}")
-        raise HTTPException(status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        logger.exception("PPT conversion service failed")
+        raise HTTPException(
+            status_code=503,
+            detail="PPT 生成服务不可用或转换失败，请检查本地 Marp 与浏览器环境。",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error during PPT generation")
+        raise HTTPException(
+            status_code=500, detail=INTERNAL_SERVER_ERROR_DETAIL
+        ) from exc
 
 
 @app.post("/api/prose/generate")
 async def generate_prose(request: GenerateProseRequest):
     try:
-        sanitized_prompt = request.prompt.replace("\r\n", "").replace("\n", "")
-        logger.info(f"Generating prose for prompt: {sanitized_prompt}")
+        logger.info("Generating prose from %d characters", len(request.prompt))
         workflow = build_prose_graph()
         events = workflow.astream(
             {
@@ -1120,8 +1169,7 @@ async def evaluate_report(request: EvaluateReportRequest):
 @app.post("/api/prompt/enhance")
 async def enhance_prompt(request: EnhancePromptRequest):
     try:
-        sanitized_prompt = request.prompt.replace("\r\n", "").replace("\n", "")
-        logger.info(f"Enhancing prompt: {sanitized_prompt}")
+        logger.info("Enhancing a prompt of %d characters", len(request.prompt))
 
         # Convert string report_style to ReportStyle enum
         report_style = None
@@ -1225,18 +1273,146 @@ async def rag_resources(request: Annotated[RAGResourceRequest, Query()]):
 
 MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 ALLOWED_EXTENSIONS = {".md", ".txt"}
+RAG_JOB_EXTENSIONS = ALLOWED_EXTENSIONS | {".pdf", ".docx"}
+RAG_JOB_MAX_UPLOAD_SIZE_BYTES = (
+    max(1, get_int_env("RAG_MAX_UPLOAD_MB", 50)) * 1024 * 1024
+)
+RAG_UPLOAD_DIRECTORY = Path(__file__).resolve().parents[2] / ".runtime" / "rag_uploads"
+RAG_UPLOAD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+rag_upload_jobs = UploadJobStore(
+    Path(__file__).resolve().parents[2] / ".runtime" / "rag_upload_jobs.sqlite3"
+)
+for interrupted_id in rag_upload_jobs.interrupted_task_ids:
+    # 中文注释：只清理已被标记为中断的临时上传文件。
+    for extension in RAG_JOB_EXTENSIONS:
+        (RAG_UPLOAD_DIRECTORY / f"{interrupted_id}{extension}").unlink(missing_ok=True)
 
 
 def _sanitize_filename(filename: str) -> str:
     """Sanitize filename to prevent path traversal attacks."""
     # Extract only the base filename, removing any path components
-    basename = os.path.basename(filename)
+    basename = filename.replace("\\", "/").split("/")[-1]
     # Remove any null bytes or other dangerous characters
     sanitized = basename.replace("\x00", "").strip()
     # Ensure filename is not empty after sanitization
     if not sanitized or sanitized in (".", ".."):
         return "unnamed_file"
     return sanitized
+
+
+def _process_rag_upload_job(task_id: str, path: Path, filename: str) -> None:
+    """Run parsing and indexing outside the upload request."""
+    try:
+        rag_upload_jobs.update(task_id, status="processing", progress=10)
+        chunks = parse_document(path, filename)
+        rag_upload_jobs.update(task_id, status="processing", progress=50)
+
+        retriever = build_retriever()
+        if retriever is None:
+            raise RuntimeError("RAG provider is no longer configured")
+        # 中文注释：分块已包含正文，不再拼接整篇文本，避免大文件重复占内存。
+        last_progress = 50
+
+        def on_index_progress(done: int, total: int) -> None:
+            nonlocal last_progress
+            if total > 0:
+                progress = 50 + min(45, int(45 * done / total))
+                if progress > last_progress:
+                    rag_upload_jobs.update(
+                        task_id, status="processing", progress=progress
+                    )
+                    last_progress = progress
+
+        resource = retriever.ingest_file(
+            b"",
+            filename,
+            chunks=chunks,
+            progress_callback=on_index_progress,
+        )
+        rag_upload_jobs.update(
+            task_id,
+            status="completed",
+            progress=100,
+            resource=resource.model_dump(),
+        )
+    except ValueError as exc:
+        rag_upload_jobs.update(
+            task_id, status="failed", progress=0, error=str(exc)[:200]
+        )
+    except Exception:
+        logger.exception("RAG upload job %s failed", task_id)
+        rag_upload_jobs.update(
+            task_id,
+            status="failed",
+            progress=0,
+            error="Failed to index this document. Check the RAG service and try again.",
+        )
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@app.post(
+    "/api/rag/upload/jobs",
+    response_model=RAGUploadJobResponse,
+    status_code=202,
+)
+async def queue_rag_resource(file: UploadFile, background_tasks: BackgroundTasks):
+    """Receive a bounded file and index it in a background task."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required for upload")
+
+    filename = _sanitize_filename(file.filename)
+    extension = Path(filename).suffix.lower()
+    if extension not in RAG_JOB_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Only .md, .txt, .pdf and .docx files are supported",
+        )
+
+    retriever = build_retriever()
+    if retriever is None:
+        raise HTTPException(status_code=503, detail="RAG provider not configured")
+    if type(retriever).ingest_file is Retriever.ingest_file:
+        raise HTTPException(
+            status_code=501, detail="Upload not supported by current RAG provider"
+        )
+
+    task_id = str(uuid4())
+    upload_path = RAG_UPLOAD_DIRECTORY / f"{task_id}{extension}"
+    total_size = 0
+    try:
+        with upload_path.open("wb") as target:
+            while data := await file.read(1024 * 1024):
+                total_size += len(data)
+                if total_size > RAG_JOB_MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="File exceeds the configured RAG upload size limit",
+                    )
+                target.write(data)
+        if total_size == 0:
+            raise HTTPException(status_code=400, detail="Cannot upload an empty file")
+    except Exception:
+        upload_path.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+    try:
+        job = rag_upload_jobs.create(task_id, filename)
+    except Exception:
+        upload_path.unlink(missing_ok=True)
+        raise
+    background_tasks.add_task(_process_rag_upload_job, task_id, upload_path, filename)
+    return job
+
+
+@app.get("/api/rag/upload/jobs/{task_id}", response_model=RAGUploadJobResponse)
+async def rag_upload_job_status(task_id: str):
+    job = rag_upload_jobs.get(task_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Upload job not found")
+    return job
 
 
 @app.post("/api/rag/upload", response_model=Resource)

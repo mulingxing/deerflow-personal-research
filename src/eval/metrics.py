@@ -124,9 +124,23 @@ def count_words(text: str) -> int:
 
 
 def count_citations(text: str) -> int:
-    """Count markdown-style citations [text](url)."""
+    """Count inline source markers, falling back to legacy web links."""
+    inline_numbers = extract_inline_source_numbers(text)
+    if inline_numbers:
+        return len(inline_numbers)
+
     pattern = r"\[[^\]]*\]\(https?://[^\s\)]+\)"
     return len(re.findall(pattern, text))
+
+
+def extract_inline_source_numbers(text: str) -> List[int]:
+    """Read only well-formed `[[n]](#ref-n)` markers from report prose."""
+    matches = re.findall(r"\[\[(\d+)\]\]\(#ref-(\d+)\)", text)
+    return [
+        int(number)
+        for number, target in matches
+        if number == target and int(number) > 0
+    ]
 
 
 def extract_domains(text: str) -> List[str]:
@@ -192,8 +206,11 @@ def compute_metrics(
     metrics.word_count = count_words(report)
     metrics.citation_count = count_citations(report)
 
-    domains = extract_domains(report)
-    metrics.unique_sources = len(domains)
+    # 中文注释：本地资料没有网页域名，改按正文引用编号统计来源数量。
+    inline_numbers = extract_inline_source_numbers(report)
+    metrics.unique_sources = (
+        len(set(inline_numbers)) if inline_numbers else len(extract_domains(report))
+    )
 
     metrics.image_count = count_images(report)
 

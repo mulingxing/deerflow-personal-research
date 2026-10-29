@@ -1,0 +1,27 @@
+/* @theme paper */
+@import 'default';
+
+section {
+  background:
+    linear-gradient(90deg, #cb9271 0 20px, transparent 20px),
+    repeating-linear-gradient(0deg, transparent 0 44px, rgba(140, 113, 83, 0.08) 45px),
+    #f7f1e6;
+  color: #343934;
+  font-family: 'Microsoft YaHei', Georgia, serif;
+  padding: 78px 100px;
+}
+
+section h1,
+section h2,
+section h3 {
+  border: 0;
+  color: #254c40;
+  font-weight: 700;
+}
+
+section h1 { font-size: 2em; }
+section h2 { font-size: 1.4em; }
+section strong { color: #af6545; }
+section a { color: #375e54; }
+section code,
+section pre { background: #eee4d5; color: #343934; }

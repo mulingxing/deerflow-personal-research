@@ -34,14 +34,22 @@
     "pasteConfigBelow": "Paste your config below and click \"Add\" to add new servers.",
     "rag": {
       "title": "Resources",
-      "description": "Manage your knowledge base resources here. Upload markdown or text files to be indexed for retrieval.",
+      "description": "Upload Markdown, text, PDF, or Word documents. You can select them in chat after processing finishes.",
       "upload": "Upload",
       "uploading": "Uploading...",
-      "uploadSuccess": "File uploaded successfully",
+      "uploadSuccess": "Document processed and ready for chat",
       "uploadFailed": "Failed to upload file",
       "emptyFile": "Cannot upload an empty file",
       "loading": "Loading resources...",
-      "noResources": "No resources found. Upload a file to get started."
+      "loadFailed": "Could not load documents. Please try again.",
+      "noResources": "No documents found. Upload a file to get started.",
+      "providerRequired": "No knowledge base provider is configured. Set RAG_PROVIDER before uploading or selecting documents.",
+      "status": {
+        "queued": "Waiting",
+        "processing": "Indexing",
+        "completed": "Ready",
+        "failed": "Failed"
+      }
     },
     "add": "Add",
     "general": {
@@ -94,6 +102,54 @@
       "strategicInvestmentDesc": "Deep, comprehensive analysis for strategic investment institutions with actionable insights"
     }
   },
+  "ppt": {
+    "eyebrow": "Presentation",
+    "title": "Create a PPT",
+    "description": "Paste notes or start from a research report, choose a style, and generate slides.",
+    "backToChat": "Back to chat",
+    "contentLabel": "Presentation content",
+    "characterCount": "{count} characters",
+    "contentPlaceholder": "Paste a research report, talk outline, or study notes...",
+    "contentHint": "The content is organized into slide points before the PowerPoint file is created.",
+    "themeLabel": "Choose a style",
+    "themeHint": "Each preview shows the cover style of its actual template.",
+    "downloadTitle": "Ready to generate",
+    "downloadHint": "Generation may take several dozen seconds. Standard PPT slides are rendered images, so their text is usually not individually editable in PowerPoint.",
+    "generate": "Generate and download PPT",
+    "generating": "Generating",
+    "generationProgress": "Organizing content and rendering slides. {seconds} seconds elapsed...",
+    "contentRequired": "Add presentation content first",
+    "generationSuccess": "PPT created and download started",
+    "generationFailed": "PPT generation failed",
+    "generationFailedWithReason": "PPT generation failed: {reason}",
+    "themes": {
+      "default": {
+        "name": "Clean White",
+        "description": "Clear and versatile for work reports",
+        "previewAlt": "Clean White style preview"
+      },
+      "gaia": {
+        "name": "Warm Talk",
+        "description": "Soft warm colors for talks and sharing",
+        "previewAlt": "Warm Talk style preview"
+      },
+      "uncover": {
+        "name": "Minimal Gray",
+        "description": "Generous space for key ideas",
+        "previewAlt": "Minimal Gray style preview"
+      },
+      "midnight": {
+        "name": "Midnight Blue",
+        "description": "Dark gradients for technical topics",
+        "previewAlt": "Midnight Blue style preview"
+      },
+      "paper": {
+        "name": "Paper Green",
+        "description": "Paper texture for teaching and reading",
+        "previewAlt": "Paper Green style preview"
+      }
+    }
+  },
   "footer": {
     "quote": "Originated from Open Source, give back to Open Source.",
     "license": "Licensed under MIT License",
@@ -127,11 +183,52 @@
         "description": "When enabled, DeerFlow will perform a quick search before planning. This is useful for researches related to ongoing events and news."
       },
       "enhancePrompt": "Enhance prompt with AI",
+      "researchMode": "Research sources",
+      "webOnly": "Web only",
+      "localOnly": "My documents only",
+      "hybrid": "Documents + web",
+      "selectResources": "Select documents",
+      "selectedResources": "{count} documents selected",
+      "noResourcesAvailable": "No documents are ready. Upload one in Settings first.",
+      "resourceLoadFailed": "Could not load documents. Please try again.",
+      "providerRequired": "Configure a knowledge base provider before researching your documents.",
+      "resourceRequired": "Select at least one document. You can also use @ to mention one.",
       "on": "On",
       "off": "Off"
     },
+    "evidence": {
+      "title": "Evidence check",
+      "sourcesTitle": "Retrieved sources",
+      "noSources": "No retrievable sources were collected; treat factual claims with caution.",
+      "coverage": "Body paragraphs with citations: {covered}/{total} ({percent}%)",
+      "coverageDisclaimer": "This checks whether paragraphs cite known source numbers; it does not verify that the source supports a claim.",
+      "unknownUrls": "The report contains {count} source links absent from retrieved results.",
+      "invalidNumbers": "The report contains {count} invalid source numbers.",
+      "unknownUrlLabel": "Unmatched links",
+      "invalidNumberLabel": "Invalid numbers"
+    },
+    "history": {
+      "title": "History",
+      "description": "Reopen previous research",
+      "newConversation": "New chat",
+      "refresh": "Refresh",
+      "actionFailed": "Action failed",
+      "finishCurrent": "Finish the current research before switching",
+      "loading": "Loading…",
+      "empty": "No conversations yet",
+      "needsRetry": "Run interrupted; ask again",
+      "runningElsewhere": "The conversation is still running. Refresh before continuing.",
+      "recoverStopped": "Original run stopped? Recover",
+      "recoverConfirm": "Confirm the run in the other tab has stopped? This marks it interrupted so you can ask again.",
+      "delete": "Delete conversation",
+      "deleteConfirm": "Delete this conversation?"
+    },
     "research": {
       "deepResearch": "Deep Research",
+      "editPlan": "Edit plan",
+      "startResearch": "Start research",
+      "startResearchConfirmed": "Great! Let's get started.",
+      "invalidPlanHint": "The research plan is invalid. This content has not been checked against sources and is not a final answer. Please ask again in the input box.",
       "researching": "Researching...",
       "generatingReport": "Generating report...",
       "reportGenerated": "Report generated",
@@ -141,6 +238,8 @@
       "report": "Report",
       "activities": "Activities",
       "generatePodcast": "Generate podcast",
+      "generatePPT": "Create PPT",
+      "pptDraftFailed": "Could not open the PPT editor. Check your browser storage settings.",
       "edit": "Edit",
       "copy": "Copy",
       "downloadReport": "Download report",

@@ -54,6 +54,16 @@ class TestCountCitations:
         text = "[Article](https://example.com/path/to/article?id=123&ref=test)"
         assert count_citations(text) == 1
 
+    def test_local_inline_citations_take_precedence_over_reference_links(self):
+        text = (
+            "研究发现。[[1]](#ref-1) 另一结果。[[2]](#ref-2)\n\n"
+            "[网页来源](https://example.com)"
+        )
+        metrics = compute_metrics(text)
+
+        assert metrics.citation_count == 2
+        assert metrics.unique_sources == 2
+
 
 class TestExtractDomains:
     """Tests for domain extraction function."""

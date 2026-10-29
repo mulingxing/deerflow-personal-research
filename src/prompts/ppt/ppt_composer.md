@@ -46,6 +46,10 @@ Typical structure includes:
 - Use concise, powerful language
 - Emphasize points with bullet points
 - Use appropriate title hierarchy
+- Keep at most 4 body bullets per slide and each bullet short; add slides for longer material instead of packing paragraphs together
+- Give a subsection or table its own slide; never combine a long quotation, a table, and notes on one slide
+- Prefer short bullets to tables. If a table is necessary, use at most 3 columns and 3 data rows, splitting larger tables across slides
+- Put methods, limitations, and citation requirements on separate slides
 
 ### 5. Review and Optimize
 - Check for completeness

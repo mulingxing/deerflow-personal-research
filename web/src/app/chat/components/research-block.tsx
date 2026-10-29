@@ -26,8 +26,10 @@ import {
   FileCode,
   FileImage,
   FileType,
+  Presentation,
 } from "lucide-react";
 import { marked } from "marked";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -43,8 +45,15 @@ import {
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
+import { PPT_DRAFT_STORAGE_KEY } from "~/core/ppt";
 import { useReplay } from "~/core/replay";
-import { closeResearch, getResearchQuery, listenToPodcast, useStore, useSettingsStore } from "~/core/store";
+import {
+  closeResearch,
+  getResearchQuery,
+  listenToPodcast,
+  useStore,
+  useSettingsStore,
+} from "~/core/store";
 import { cn } from "~/lib/utils";
 
 import { EvaluationDialog } from "./evaluation-dialog";
@@ -59,6 +68,7 @@ export function ResearchBlock({
   researchId: string | null;
 }) {
   const t = useTranslations("chat.research");
+  const router = useRouter();
   const reportId = useStore((state) =>
     researchId ? state.researchReportIds.get(researchId) : undefined,
   );
@@ -68,6 +78,12 @@ export function ResearchBlock({
   );
   const reportStreaming = useStore((state) =>
     reportId ? (state.messages.get(reportId)?.isStreaming ?? false) : false,
+  );
+  const reportComplete = useStore((state) =>
+    reportId
+      ? state.messages.get(reportId)?.finishReason === "stop" &&
+        !state.messages.get(reportId)?.historyIncomplete
+      : false,
   );
   const { isReplay } = useReplay();
   useEffect(() => {
@@ -82,6 +98,20 @@ export function ResearchBlock({
     }
     await listenToPodcast(researchId);
   }, [researchId]);
+
+  const handleOpenPPT = useCallback(() => {
+    if (!reportId) return;
+    const report = useStore.getState().messages.get(reportId);
+    if (!report?.content) return;
+
+    try {
+      // 中文注释：把当前报告作为 PPT 草稿带到独立页面，允许用户再编辑。
+      window.sessionStorage.setItem(PPT_DRAFT_STORAGE_KEY, report.content);
+      router.push("/ppt");
+    } catch {
+      toast.error(t("pptDraftFailed"));
+    }
+  }, [reportId, router, t]);
 
   const [editing, setEditing] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -643,9 +673,14 @@ ${htmlContent}
 
   return (
     <div className={cn("h-full w-full", className)}>
-      <Card className={cn("relative h-full w-full pt-4", className)}>
-        <div className="absolute right-4 flex h-9 items-center justify-center">
-          {hasReport && !reportStreaming && (
+      <Card
+        className={cn(
+          "relative flex h-full w-full flex-col gap-2 pt-4",
+          className,
+        )}
+      >
+        <div className="flex min-h-9 w-full shrink-0 flex-wrap items-center justify-end px-4">
+          {hasReport && !reportStreaming && reportComplete && (
             <>
               <Tooltip title={t("generatePodcast")}>
                 <Button
@@ -656,6 +691,17 @@ ${htmlContent}
                   onClick={handleGeneratePodcast}
                 >
                   <Headphones />
+                </Button>
+              </Tooltip>
+              <Tooltip title={t("generatePPT")}>
+                <Button
+                  className="text-gray-400"
+                  size="icon"
+                  variant="ghost"
+                  disabled={isReplay}
+                  onClick={handleOpenPPT}
+                >
+                  <Presentation />
                 </Button>
               </Tooltip>
               <Tooltip title={t("edit")}>
@@ -749,7 +795,7 @@ ${htmlContent}
           </Tooltip>
         </div>
         <Tabs
-          className="flex h-full w-full flex-col"
+          className="flex min-h-0 w-full flex-1 flex-col"
           value={activeTab}
           onValueChange={(value) => setActiveTab(value)}
         >
@@ -819,7 +865,9 @@ ${htmlContent}
             useStore.getState().messages.get(reportId)?.content ?? ""
           }
           query={getResearchQuery(researchId)}
-          reportStyle={useSettingsStore.getState().general.reportStyle.toLowerCase()}
+          reportStyle={useSettingsStore
+            .getState()
+            .general.reportStyle.toLowerCase()}
         />
       )}
     </div>

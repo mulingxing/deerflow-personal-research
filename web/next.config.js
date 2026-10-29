@@ -39,7 +39,9 @@ const config = {
   },
 
   // ... rest of the configuration.
-  output: "standalone",
+  // Windows local builds do not need standalone packaging, which requires
+  // symlink privileges with pnpm. Keep the original output for Linux/Docker.
+  output: process.platform === "win32" ? undefined : "standalone",
 };
 
 export default withNextIntl(config);

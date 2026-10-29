@@ -1,0 +1,46 @@
+/* @theme midnight */
+@import 'default';
+
+section {
+  background:
+    radial-gradient(circle at 92% 8%, rgba(73, 210, 219, 0.24), transparent 28%),
+    linear-gradient(135deg, #0d1830 0%, #182746 55%, #273158 100%);
+  color: #e8f1ff;
+  font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+  padding: 76px 96px;
+}
+
+section::before {
+  background: linear-gradient(90deg, #5de0e6, #a78bfa);
+  content: '';
+  height: 8px;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 100%;
+}
+
+section h1,
+section h2,
+section h3 {
+  border: 0;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+section h1 { font-size: 2em; }
+section h2 { font-size: 1.4em; }
+section strong { color: #67e6e8; }
+section a { color: #91e8ec; }
+section code,
+section pre { background: #101a2d; color: #e8f1ff; }
+
+/* 深色主题的表格单元格需要自己的底色，避免默认白底配浅色字。 */
+section table th,
+section table td {
+  border-color: #5b7997;
+  color: #e8f1ff;
+}
+section table th { background: #274866; }
+section table td { background: #172b47; }
+section table tr:nth-child(even) td { background: #1d3652; }

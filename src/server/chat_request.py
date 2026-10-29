@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
 # SPDX-License-Identifier: MIT
 
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -23,13 +23,18 @@ class ChatMessage(BaseModel):
     )
     content: Union[str, List[ContentItem]] = Field(
         ...,
-        description="The content of the message, either a string or a list of content items",
+        description="The message content as text or structured items",
     )
 
 
 class ChatRequest(BaseModel):
     messages: Optional[List[ChatMessage]] = Field(
         [], description="History of messages between the user and the assistant"
+    )
+    conversation_history: List[ChatMessage] = Field(
+        default_factory=list,
+        max_length=12,
+        description="Completed earlier turns, kept separate from the current question",
     )
     resources: Optional[List[Resource]] = Field(
         [], description="Resources to be used for the research"
@@ -63,7 +68,8 @@ class ChatRequest(BaseModel):
         True, description="Whether to get background investigation before plan"
     )
     enable_web_search: Optional[bool] = Field(
-        True, description="Whether to enable web search, set to False to use only local RAG"
+        True,
+        description="Whether to enable web search, set to False to use only local RAG",
     )
     report_style: Optional[ReportStyle] = Field(
         ReportStyle.ACADEMIC, description="The style of the report"
@@ -73,15 +79,15 @@ class ChatRequest(BaseModel):
     )
     enable_clarification: Optional[bool] = Field(
         None,
-        description="Whether to enable multi-turn clarification (default: None, uses State default=False)",
+        description="Whether to enable multi-turn clarification",
     )
     max_clarification_rounds: Optional[int] = Field(
         None,
-        description="Maximum number of clarification rounds (default: None, uses State default=3)",
+        description="Maximum number of clarification rounds",
     )
     interrupt_before_tools: List[str] = Field(
         default_factory=list,
-        description="List of tool names to interrupt before execution (e.g., ['db_tool', 'api_tool'])",
+        description="Tool names to interrupt before execution",
     )
 
 
@@ -106,9 +112,17 @@ class GeneratePodcastRequest(BaseModel):
 
 
 class GeneratePPTRequest(BaseModel):
-    content: str = Field(..., description="The content of the ppt")
+    content: str = Field(
+        ...,
+        min_length=1,
+        max_length=200_000,
+        description="Source text for the presentation",
+    )
     locale: str = Field(
         "en-US", description="Language locale for the conversation (e.g., en-US, zh-CN)"
+    )
+    theme: Literal["default", "gaia", "uncover", "midnight", "paper"] = Field(
+        "default", description="Visual theme of the generated presentation"
     )
 
 

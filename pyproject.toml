@@ -51,6 +51,9 @@ dependencies = [
     "qdrant-client>=1.15.1",
     "langchain-qdrant>=0.2.0",
     "orjson>=3.11.5",
+    "pypdf>=5.0",
+    "python-docx>=1.2",
+    "fastembed>=0.7",
 ]
 
 [project.optional-dependencies]

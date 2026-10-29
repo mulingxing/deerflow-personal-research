@@ -5,7 +5,7 @@
 import asyncio
 import base64
 import os
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -312,24 +312,57 @@ class TestPodcastEndpoint:
 
 class TestPPTEndpoint:
     @patch("src.server.app.build_ppt_graph")
-    @patch("builtins.open", new_callable=mock_open, read_data=b"fake_ppt_data")
-    def test_generate_ppt_success(self, mock_file, mock_build_graph, client):
+    def test_generate_ppt_layout_overflow_returns_guidance(
+        self, mock_build_graph, client
+    ):
+        from src.ppt.service import PPTLayoutOverflowError
+
         mock_workflow = MagicMock()
         mock_build_graph.return_value = mock_workflow
-        mock_workflow.invoke.return_value = {
-            "generated_file_path": "/fake/path/test.pptx"
-        }
+        mock_workflow.invoke.side_effect = PPTLayoutOverflowError(
+            "PPT 第 1 页内容超出画布，请缩短长段落或表格后重试"
+        )
 
-        request_data = {"content": "Test content for PPT"}
+        response = client.post("/api/ppt/generate", json={"content": "Test"})
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == (
+            "PPT 第 1 页内容超出画布，请缩短长段落或表格后重试"
+        )
+
+    @patch("src.server.app.build_ppt_graph")
+    def test_generate_ppt_success(self, mock_build_graph, client):
+        mock_workflow = MagicMock()
+        mock_build_graph.return_value = mock_workflow
+        mock_workflow.invoke.return_value = {"ppt_bytes": b"fake_ppt_data"}
+
+        request_data = {"content": "Test content for PPT", "theme": "paper"}
 
         response = client.post("/api/ppt/generate", json=request_data)
 
         assert response.status_code == 200
+        mock_workflow.invoke.assert_called_once_with(
+            {"input": "Test content for PPT", "locale": "en-US", "theme": "paper"}
+        )
         assert (
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             in response.headers["content-type"]
         )
         assert response.content == b"fake_ppt_data"
+        assert response.headers["content-disposition"] == (
+            "attachment; filename=deerflow-presentation.pptx"
+        )
+
+    @patch("src.server.app.build_ppt_graph")
+    def test_generate_ppt_converter_unavailable(self, mock_build_graph, client):
+        mock_workflow = MagicMock()
+        mock_build_graph.return_value = mock_workflow
+        mock_workflow.invoke.side_effect = RuntimeError("converter unavailable")
+
+        response = client.post("/api/ppt/generate", json={"content": "Test"})
+
+        assert response.status_code == 503
+        assert "PPT 生成服务" in response.json()["detail"]
 
     @patch("src.server.app.build_ppt_graph")
     def test_generate_ppt_error(self, mock_build_graph, client):

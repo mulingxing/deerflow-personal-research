@@ -14,15 +14,15 @@ import type { ChatEvent } from "./types";
 
 function getLocaleFromCookie(): string {
   if (typeof document === "undefined") return "en-US";
-  
+
   // Map frontend locale codes to backend locale format
   // Frontend uses: "en", "zh"
   // Backend expects: "en-US", "zh-CN"
-  const LOCALE_MAP = { "en": "en-US", "zh": "zh-CN" } as const;
-  
+  const LOCALE_MAP = { en: "en-US", zh: "zh-CN" } as const;
+
   // Initialize to raw locale format (matches cookie format)
   let rawLocale = "en";
-  
+
   // Read from cookie
   const cookies = document.cookie.split(";");
   for (const cookie of cookies) {
@@ -32,7 +32,7 @@ function getLocaleFromCookie(): string {
       break;
     }
   }
-  
+
   // Map raw locale to backend format, fallback to en-US if unmapped
   return LOCALE_MAP[rawLocale as keyof typeof LOCALE_MAP] ?? "en-US";
 }
@@ -41,6 +41,7 @@ export async function* chatStream(
   userMessage: string,
   params: {
     thread_id: string;
+    history?: Array<{ role: "user" | "assistant"; content: string }>;
     resources?: Array<Resource>;
     auto_accepted_plan: boolean;
     enable_clarification?: boolean;
@@ -52,7 +53,12 @@ export async function* chatStream(
     enable_deep_thinking?: boolean;
     enable_background_investigation: boolean;
     enable_web_search?: boolean;
-    report_style?: "academic" | "popular_science" | "news" | "social_media" | "strategic_investment";
+    report_style?:
+      | "academic"
+      | "popular_science"
+      | "news"
+      | "social_media"
+      | "strategic_investment";
     mcp_settings?: {
       servers: Record<
         string,
@@ -69,20 +75,22 @@ export async function* chatStream(
     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY ||
     location.search.includes("mock") ||
     location.search.includes("replay=")
-  ) 
+  )
     return yield* chatReplayStream(userMessage, params, options);
-  
-  try{
+
+  try {
     const locale = getLocaleFromCookie();
+    const { history, ...requestParams } = params;
     const stream = fetchStream(resolveServiceURL("chat/stream"), {
       body: JSON.stringify({
         messages: [{ role: "user", content: userMessage }],
+        conversation_history: history ?? [],
         locale,
-        ...params,
+        ...requestParams,
       }),
       signal: options.abortSignal,
     });
-    
+
     for await (const event of stream) {
       if (event.data == null) continue;
       yield {
@@ -90,8 +98,9 @@ export async function* chatStream(
         data: JSON.parse(event.data),
       } as ChatEvent;
     }
-  }catch(e){
+  } catch (e) {
     console.error(e);
+    throw e;
   }
 }
 

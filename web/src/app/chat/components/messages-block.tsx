@@ -4,7 +4,8 @@
 import { motion } from "framer-motion";
 import { FastForward, Play } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import { RainbowText } from "~/components/deer-flow/rainbow-text";
 import { Button } from "~/components/ui/button";
@@ -19,6 +20,7 @@ import { useReplayMetadata } from "~/core/api/hooks";
 import type { Option, Resource } from "~/core/messages";
 import { useReplay } from "~/core/replay";
 import { sendMessage, useMessageIds, useStore } from "~/core/store";
+import { resolveResearchSelection } from "~/core/store/conversation-utils";
 import { env } from "~/env";
 import { cn } from "~/lib/utils";
 
@@ -29,39 +31,74 @@ import { Welcome } from "./welcome";
 
 export function MessagesBlock({ className }: { className?: string }) {
   const t = useTranslations("chat.messages");
+  const tHistory = useTranslations("chat.history");
   const messageIds = useMessageIds();
   const messageCount = messageIds.length;
   const responding = useStore((state) => state.responding);
+  const conversationId = useStore((state) => state.conversationId);
   const { isReplay } = useReplay();
   const { title: replayTitle, hasError: replayHasError } = useReplayMetadata();
   const [replayStarted, setReplayStarted] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [feedback, setFeedback] = useState<{ option: Option } | null>(null);
+  useEffect(() => {
+    setFeedback(null);
+  }, [conversationId]);
   const handleSend = useCallback(
-    async (
+    (
       message: string,
       options?: {
         interruptFeedback?: string;
         resources?: Array<Resource>;
       },
-    ) => {
+    ): boolean => {
+      const state = useStore.getState();
+      if (state.remoteRunning) {
+        toast.error(tHistory("runningElsewhere"));
+        return false;
+      }
+      if (
+        (options?.interruptFeedback ?? feedback?.option.value) &&
+        state.conversationStatus === "needs_retry"
+      ) {
+        toast.error(tHistory("needsRetry"));
+        return false;
+      }
+      if (
+        state.responding ||
+        state.sendStarting ||
+        state.conversationSwitching ||
+        state.remoteRunning
+      ) {
+        return false;
+      }
+      const selection = resolveResearchSelection(
+        state.researchMode,
+        state.selectedResources,
+        options?.resources,
+      );
+      if (!selection.valid) {
+        toast.error("请先选择至少一份资料再提问。");
+        return false;
+      }
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
-      try {
-        await sendMessage(
-          message,
-          {
-            interruptFeedback:
-              options?.interruptFeedback ?? feedback?.option.value,
-            resources: options?.resources,
-          },
-          {
-            abortSignal: abortController.signal,
-          },
-        );
-      } catch {}
+      void sendMessage(
+        message,
+        {
+          interruptFeedback:
+            options?.interruptFeedback ?? feedback?.option.value,
+          resources: options?.resources,
+        },
+        {
+          abortSignal: abortController.signal,
+        },
+      ).catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : "发送失败");
+      });
+      return true;
     },
-    [feedback],
+    [feedback, tHistory],
   );
   const handleCancel = useCallback(() => {
     abortControllerRef.current?.abort();
@@ -86,9 +123,10 @@ export function MessagesBlock({ className }: { className?: string }) {
     fastForwardReplay(!fastForwarding);
   }, [fastForwarding]);
   return (
-    <div className={cn("flex h-full flex-col", className)}>
+    <div className={cn("flex h-full min-h-0 min-w-0 flex-col", className)}>
       {responding || messageCount !== 0 || isReplay ? (
         <MessageListView
+          key={conversationId}
           className="flex flex-grow"
           onFeedback={handleFeedback}
           onSendMessage={handleSend}
@@ -97,9 +135,10 @@ export function MessagesBlock({ className }: { className?: string }) {
         <ConversationStarter onSend={handleSend} />
       )}
       {!isReplay ? (
-        <div className="relative flex h-42 shrink-0 pb-4">
+        <div className="relative flex min-h-42 shrink-0 pb-4">
           <InputBox
-            className="h-full w-full"
+            key={conversationId}
+            className="w-full"
             responding={responding}
             feedback={feedback}
             onSend={handleSend}

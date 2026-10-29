@@ -90,6 +90,17 @@ def test_init_invalid_provider(monkeypatch):
         QdrantProvider()
 
 
+def test_list_resources_reports_connection_error(monkeypatch):
+    provider = QdrantProvider()
+
+    def fail_to_connect():
+        raise RuntimeError("Qdrant directory is locked")
+
+    monkeypatch.setattr(provider, "_connect", fail_to_connect)
+    with pytest.raises(RuntimeError, match="locked"):
+        provider.list_resources()
+
+
 def test_get_embedding_dimension_explicit(monkeypatch):
     monkeypatch.setenv("QDRANT_EMBEDDING_DIM", "2048")
     provider = QdrantProvider()
@@ -148,7 +159,10 @@ def test_split_content_short():
 def test_split_content_long(monkeypatch):
     monkeypatch.setenv("QDRANT_CHUNK_SIZE", "20")
     provider = QdrantProvider()
-    content = "Paragraph one here\n\nParagraph two here\n\nParagraph three here\n\nParagraph four here"
+    content = (
+        "Paragraph one here\n\nParagraph two here\n\n"
+        "Paragraph three here\n\nParagraph four here"
+    )
     chunks = provider._split_content(content)
     assert len(chunks) > 1
 
@@ -319,6 +333,109 @@ def test_chunk_size_configuration(monkeypatch):
     monkeypatch.setenv("QDRANT_CHUNK_SIZE", "5000")
     provider = QdrantProvider()
     assert provider.chunk_size == 5000
+
+
+def test_upload_lists_and_searches_selected_file_with_page_metadata(monkeypatch):
+    monkeypatch.setenv("QDRANT_TOP_K", "1")
+    provider = QdrantProvider()
+    first = provider.ingest_file(b"First document", "first.txt")
+    selected = provider.ingest_file(
+        "第二份资料".encode("utf-8"),
+        "second.pdf",
+        chunks=[{"content": "第二份资料", "page_number": 3, "section": "结论"}],
+    )
+
+    assert {resource.uri for resource in provider.list_resources()} == {
+        first.uri,
+        selected.uri,
+    }
+    assert [resource.uri for resource in provider.list_resources("second")] == [
+        selected.uri
+    ]
+    assert selected.filename == "second.pdf"
+    assert provider.list_resources("second")[0].filename == "second.pdf"
+
+    documents = provider.query_relevant_documents("资料", resources=[selected])
+    assert len(documents) == 1
+    assert documents[0].url == selected.uri
+    assert documents[0].chunks[0].page_number == 3
+    assert documents[0].chunks[0].section == "结论"
+
+
+def test_list_resources_distinguishes_same_title_by_original_filename():
+    provider = QdrantProvider()
+    pdf = provider.ingest_file(b"PDF content", "Agent面试问答.pdf")
+    word = provider.ingest_file(b"Word content", "Agent面试问答.docx")
+
+    listed = {resource.filename: resource for resource in provider.list_resources()}
+    assert listed["Agent面试问答.pdf"].uri == pdf.uri
+    assert listed["Agent面试问答.docx"].uri == word.uri
+    assert listed["Agent面试问答.pdf"].title == listed["Agent面试问答.docx"].title
+
+
+def test_local_qdrant_directory_survives_provider_restart(monkeypatch, tmp_path):
+    monkeypatch.setenv("QDRANT_LOCATION", str(tmp_path / "qdrant"))
+    provider = QdrantProvider()
+    uploaded = provider.ingest_file(b"Personal notes", "notes.txt")
+    provider.close()
+
+    restarted = QdrantProvider()
+    try:
+        assert uploaded.uri in {item.uri for item in restarted.list_resources()}
+    finally:
+        restarted.close()
+
+
+def test_relative_qdrant_location_uses_project_root(monkeypatch, tmp_path):
+    fake_module = tmp_path / "project" / "src" / "rag" / "qdrant.py"
+    monkeypatch.setattr(qdrant_mod, "__file__", str(fake_module))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("QDRANT_LOCATION", "data/qdrant")
+
+    provider = QdrantProvider()
+    try:
+        provider.create_collection()
+        assert (tmp_path / "project" / "data" / "qdrant").is_dir()
+        assert not (tmp_path / "data" / "qdrant").exists()
+    finally:
+        provider.close()
+
+
+def test_upload_batches_embeddings_and_reports_progress():
+    provider = QdrantProvider()
+    calls = []
+    progress = []
+
+    def embed_documents(texts):
+        calls.append(len(texts))
+        return [[0.1] * provider.embedding_dim for _ in texts]
+
+    provider.embedding_model.embed_documents = embed_documents
+    uploaded = provider.ingest_file(
+        b"",
+        "large.pdf",
+        chunks=[{"content": f"Content {index}"} for index in range(33)],
+        progress_callback=lambda done, total: progress.append((done, total)),
+    )
+
+    assert uploaded.uri in {item.uri for item in provider.list_resources()}
+    assert calls == [32, 1]
+    assert progress == [(32, 33), (33, 33)]
+
+
+def test_fastembed_configuration_is_lazy(monkeypatch):
+    monkeypatch.setenv("QDRANT_EMBEDDING_PROVIDER", "fastembed")
+    monkeypatch.delenv("QDRANT_EMBEDDING_MODEL", raising=False)
+    provider = QdrantProvider()
+    assert provider.embedding_model_name == "BAAI/bge-small-zh-v1.5"
+    assert provider.embedding_dim == 512
+    assert isinstance(provider.embedding_model, qdrant_mod.FastEmbedEmbeddings)
+    monkeypatch.setattr(
+        provider.embedding_model,
+        "_load_model",
+        lambda: pytest.fail("Listing resources must not load FastEmbed"),
+    )
+    assert provider.list_resources() == []
 
 
 def test_collection_name_configuration(monkeypatch):

@@ -9,10 +9,20 @@ from pydantic import BaseModel, Field
 class Chunk:
     content: str
     similarity: float
+    page_number: int | None
+    section: str | None
 
-    def __init__(self, content: str, similarity: float):
+    def __init__(
+        self,
+        content: str,
+        similarity: float,
+        page_number: int | None = None,
+        section: str | None = None,
+    ):
         self.content = content
         self.similarity = similarity
+        self.page_number = page_number
+        self.section = section
 
 
 class Document:
@@ -23,24 +33,34 @@ class Document:
     id: str
     url: str | None = None
     title: str | None = None
-    chunks: list[Chunk] = []
+    chunks: list[Chunk]
 
     def __init__(
         self,
         id: str,
         url: str | None = None,
         title: str | None = None,
-        chunks: list[Chunk] = [],
+        chunks: list[Chunk] | None = None,
     ):
         self.id = id
         self.url = url
         self.title = title
-        self.chunks = chunks
+        self.chunks = chunks if chunks is not None else []
 
     def to_dict(self) -> dict:
         d = {
             "id": self.id,
             "content": "\n\n".join([chunk.content for chunk in self.chunks]),
+            "source_type": "local_document",
+            "chunks": [
+                {
+                    "content": chunk.content,
+                    "similarity": chunk.similarity,
+                    "page_number": chunk.page_number,
+                    "section": chunk.section,
+                }
+                for chunk in self.chunks
+            ],
         }
         if self.url:
             d["url"] = self.url
@@ -57,6 +77,7 @@ class Resource(BaseModel):
     uri: str = Field(..., description="The URI of the resource")
     title: str = Field(..., description="The title of the resource")
     description: str | None = Field("", description="The description of the resource")
+    filename: str | None = Field(None, description="The original uploaded filename")
 
 
 class Retriever(abc.ABC):
@@ -75,10 +96,10 @@ class Retriever(abc.ABC):
     async def list_resources_async(self, query: str | None = None) -> list[Resource]:
         """
         List resources from the rag provider (asynchronous version).
-        
+
         Implementations should choose between:
         - Providing native async I/O operations for true non-blocking behavior
-        - Using asyncio.to_thread() to wrap the synchronous version if async I/O is not available
+        - Wrapping synchronous I/O with asyncio.to_thread() when needed
         """
         pass
 
@@ -97,10 +118,10 @@ class Retriever(abc.ABC):
     ) -> list[Document]:
         """
         Query relevant documents from the resources (asynchronous version).
-        
+
         Implementations should choose between:
         - Providing native async I/O operations for true non-blocking behavior
-        - Using asyncio.to_thread() to wrap the synchronous version if async I/O is not available
+        - Wrapping synchronous I/O with asyncio.to_thread() when needed
         """
         pass
 

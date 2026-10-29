@@ -1,5 +1,46 @@
 # 🦌 DeerFlow
 
+> **本仓库是 [bytedance/deer-flow](https://github.com/bytedance/deer-flow) 1.x 的二次开发版本，并非 DeerFlow 的原创实现。**代码基于上游 `main-1.x` 分支的 [`2ab2876`](https://github.com/bytedance/deer-flow/commit/2ab28765803d4d9582aaa8f2f3355137d154e273) 提交。LangGraph 研究流程、联网搜索、报告生成、计划人工审核等由上游提供；本版本的增量见下表。保留上游 [MIT 许可](LICENSE)和署名。
+
+## 本版本新增内容
+
+| 功能 | 增量实现 | 代码与说明 |
+| --- | --- | --- |
+| 本地资料研究 | 上传 Markdown、TXT、PDF、DOCX，使用本地 Qdrant 建索引；可选择只查资料或结合联网搜索。 | [`src/rag/ingestion.py`](src/rag/ingestion.py)、[`src/rag/qdrant.py`](src/rag/qdrant.py)、[`web/src/app/settings/tabs/rag-tab.tsx`](web/src/app/settings/tabs/rag-tab.tsx)、[使用说明](docs/STAGE1_PERSONAL_RESEARCH.md) |
+| 报告来源面板 | 整理研究工具实际返回的来源，展示页码/章节，并检查报告中的来源编号与链接。引用覆盖率只检查标注格式，不代表事实正确。 | [`src/citations/report_sources.py`](src/citations/report_sources.py)、[`web/src/core/evidence/audit.ts`](web/src/core/evidence/audit.ts)、[使用说明](docs/STAGE2_EVIDENCE.md) |
+| 本机聊天历史 | 将研究快照保存到 SQLite，支持打开旧会话，并检测不同标签页的保存冲突。 | [`src/server/history.py`](src/server/history.py)、[`web/src/app/chat/components/history-sidebar.tsx`](web/src/app/chat/components/history-sidebar.tsx)、[使用说明](docs/STAGE3_HISTORY.md) |
+| PPT 导出 | 将报告或笔记生成 `.pptx`，提供 5 种主题预览、长内容拆页和渲染后溢出检查。 | [`src/ppt/service.py`](src/ppt/service.py)、[`web/src/app/ppt/page.tsx`](web/src/app/ppt/page.tsx)、[使用说明](docs/STAGE4_PPT.md) |
+
+当前版本面向**本机单用户**。历史 API 尚无登录和用户隔离，不应直接开放给不可信网络。使用云端大模型回答资料问题时，选中的资料片段仍会发送给模型服务。导出的 PPT 页面通常是图像，无法在 PowerPoint 中逐项编辑文字。
+
+### 从本仓库复现
+
+准备 Python 3.12、[uv](https://docs.astral.sh/uv/)、Node.js 22 和 pnpm 10.6.5。克隆**本仓库**并进入根目录后，在 PowerShell 中执行：
+
+```powershell
+uv sync --locked --extra test
+Copy-Item .env.local.example .env
+Copy-Item conf.deepseek.yaml.example conf.yaml
+Set-Location web
+pnpm install --frozen-lockfile
+Set-Location ..
+```
+
+在 `.env` 中填入自己的模型密钥；联网研究还需要配置搜索服务及其密钥。`.env`、`conf.yaml`、上传的资料和 `.runtime/` 只保存在本机。分别在两个终端运行后端 `uv run python server.py` 和前端 `cd web; pnpm dev`，然后访问 `http://127.0.0.1:3000`。[Windows 第 0 阶段记录](docs/STAGE0_WINDOWS.md)介绍最初的上游环境验证；上表的四篇文档说明本版本增量。根目录的 `start.cmd`、`verify.cmd` 依赖本机 `.tools/` 运行时目录，新克隆的仓库无需使用它们。
+
+增量功能的本地检查命令：
+
+```powershell
+uv run python -m pytest tests/unit/citations/test_report_sources.py tests/unit/server/test_history.py tests/unit/ppt/test_service.py -q
+Set-Location web
+pnpm typecheck
+pnpm test:run --runInBand
+```
+
+下方保留的上游视频和重放链接展示的是**官方原版 DeerFlow**，并非本仓库新增功能的演示。
+
+---
+
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -21,7 +62,7 @@ DeerFlow 新接入BytePlus自主推出的智能搜索与爬取工具集--[InfoQu
 
 请访问[DeerFlow 的官方网站](https://deerflow.tech/)了解更多详情。
 
-## 演示
+## 上游官方演示（原版 DeerFlow）
 
 ### 视频
 
@@ -81,9 +122,7 @@ DeerFlow 使用 Python 开发，并配有用 Node.js 编写的 Web UI。为确�
 ### 安装
 
 ```bash
-# 克隆仓库
-git clone https://github.com/bytedance/deer-flow.git
-cd deer-flow
+# 使用本仓库 GitHub 页面上的 Code 按钮克隆，然后进入仓库根目录。
 
 # 安装依赖，uv将负责Python解释器和虚拟环境的创建，并安装所需的包
 uv sync

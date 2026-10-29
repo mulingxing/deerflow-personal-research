@@ -6,17 +6,89 @@ import { toast } from "sonner";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
+import { env } from "~/env";
+
 import { chatStream, generatePodcast } from "../api";
+import {
+  deleteConversation as deleteConversationAPI,
+  getConversation,
+  listConversations,
+  saveConversation as saveConversationAPI,
+  type ConversationSnapshot,
+  type ConversationStatus,
+  type ConversationSummary,
+  type ResearchMode,
+} from "../api/history";
 import type { Citation, Message, Resource } from "../messages";
 import { mergeMessage } from "../messages";
 import { parseJSON } from "../utils";
 
-import { getChatStreamSettings } from "./settings-store";
+import {
+  boundedConversationHistory,
+  completedRunStatus,
+  conversationTitle,
+  makeConversationSnapshot,
+  resolveResearchSelection,
+  restoreConversationSnapshot,
+} from "./conversation-utils";
+import { getChatStreamSettings, setEnableWebSearch } from "./settings-store";
 
-const THREAD_ID = nanoid();
+const ACTIVE_CONVERSATION_KEY = "deerflow.active-conversation";
+const ACTIVE_RUN_OWNER_KEY = "deerflow.active-run-owner";
+const initialConversationId = nanoid();
+
+function readBrowserStorage(
+  scope: "local" | "session",
+  key: string,
+): string | null {
+  try {
+    return (
+      scope === "local" ? window.localStorage : window.sessionStorage
+    ).getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeBrowserStorage(
+  scope: "local" | "session",
+  key: string,
+  value: string,
+): void {
+  try {
+    (scope === "local" ? window.localStorage : window.sessionStorage).setItem(
+      key,
+      value,
+    );
+  } catch {
+    // 浏览器禁用 Web Storage 时，当前页面和后端历史功能仍可继续使用。
+  }
+}
+
+function removeBrowserStorage(scope: "local" | "session", key: string): void {
+  try {
+    (scope === "local"
+      ? window.localStorage
+      : window.sessionStorage
+    ).removeItem(key);
+  } catch {
+    // 无法访问存储时无需清理；运行状态仍由内存和服务端记录决定。
+  }
+}
 
 export const useStore = create<{
   responding: boolean;
+  sendStarting: boolean;
+  conversationSwitching: boolean;
+  remoteRunning: boolean;
+  conversationId: string;
+  conversationStatus: ConversationStatus;
+  conversations: ConversationSummary[];
+  historyLoading: boolean;
+  historyError: string | null;
+  activeRunThreadId: string | null;
+  selectedResources: Resource[];
+  researchMode: ResearchMode;
   threadId: string | undefined;
   messageIds: string[];
   messages: Map<string, Message>;
@@ -36,9 +108,24 @@ export const useStore = create<{
   closeResearch: () => void;
   setOngoingResearch: (researchId: string | null) => void;
   setCitations: (researchId: string, citations: Citation[]) => void;
+  setSelectedResources: (
+    value: Resource[] | ((current: Resource[]) => Resource[]),
+  ) => void;
+  setResearchMode: (mode: ResearchMode) => void;
 }>((set) => ({
   responding: false,
-  threadId: THREAD_ID,
+  sendStarting: false,
+  conversationSwitching: false,
+  remoteRunning: false,
+  conversationId: initialConversationId,
+  conversationStatus: "idle",
+  conversations: [],
+  historyLoading: true,
+  historyError: null,
+  activeRunThreadId: null,
+  selectedResources: [],
+  researchMode: getChatStreamSettings().enableWebSearch ? "web" : "local",
+  threadId: undefined,
   messageIds: [],
   messages: new Map<string, Message>(),
   researchIds: [],
@@ -85,10 +172,304 @@ export const useStore = create<{
   },
   setCitations(researchId: string, citations: Citation[]) {
     set((state) => ({
-      researchCitations: new Map(state.researchCitations).set(researchId, citations),
+      researchCitations: new Map(state.researchCitations).set(
+        researchId,
+        citations,
+      ),
     }));
   },
+  setSelectedResources(value) {
+    set((state) => ({
+      selectedResources:
+        typeof value === "function" ? value(state.selectedResources) : value,
+    }));
+  },
+  setResearchMode(researchMode) {
+    set({ researchMode });
+  },
 }));
+
+type ChatStoreState = ReturnType<typeof useStore.getState>;
+let historyReady = false;
+let historyInitialization: Promise<void> | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveQueue: Promise<void> = Promise.resolve();
+let restoringSnapshot = false;
+// 保存时带上上次读到的版本，避免多个浏览器标签页静默覆盖彼此。
+const knownVersions = new Map<string, string>();
+
+function upsertConversation(summary: ConversationSummary): void {
+  useStore.setState((state) => ({
+    conversations: [
+      summary,
+      ...state.conversations.filter((item) => item.id !== summary.id),
+    ].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+    historyError: null,
+  }));
+}
+
+function persistConversation(state: ChatStoreState): Promise<void> {
+  if (!historyReady || state.remoteRunning || state.messageIds.length === 0) {
+    return Promise.resolve();
+  }
+
+  const id = state.conversationId;
+  const title = conversationTitle(state);
+  const status = state.conversationStatus;
+  // 先序列化一份，避免后续流式更新修改同一个 Message 对象。
+  const snapshot = JSON.parse(
+    JSON.stringify(makeConversationSnapshot(state)),
+  ) as ConversationSnapshot;
+
+  const task = saveQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const saved = await saveConversationAPI(
+        id,
+        title,
+        status,
+        snapshot,
+        knownVersions.get(id) ?? null,
+      );
+      knownVersions.set(id, saved.updated_at);
+      upsertConversation(saved);
+    });
+  saveQueue = task;
+  return task.catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "保存会话失败";
+    useStore.setState({ historyError: message });
+    throw error;
+  });
+}
+
+function scheduleConversationSave(): void {
+  if (!historyReady || restoringSnapshot) return;
+  if (saveTimer) return;
+  // 流式内容持续变化时按固定间隔保存，刷新页面也能找回最近的内容。
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void persistConversation(useStore.getState()).catch((error: unknown) => {
+      console.error("Failed to save conversation:", error);
+    });
+  }, 1500);
+}
+
+async function flushConversation(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  await persistConversation(useStore.getState());
+}
+
+function emptyConversation(id: string): Partial<ChatStoreState> {
+  return {
+    conversationId: id,
+    conversationStatus: "idle",
+    remoteRunning: false,
+    threadId: undefined,
+    activeRunThreadId: null,
+    messageIds: [],
+    messages: new Map(),
+    researchIds: [],
+    researchPlanIds: new Map(),
+    researchReportIds: new Map(),
+    researchActivityIds: new Map(),
+    researchQueries: new Map(),
+    researchCitations: new Map(),
+    ongoingResearchId: null,
+    openResearchId: null,
+    selectedResources: [],
+    researchMode: "web",
+  };
+}
+
+function restoreConversation(detail: {
+  id: string;
+  status: ConversationStatus;
+  snapshot: ConversationSnapshot;
+}): void {
+  const wasRunning = detail.status === "running";
+  const ownedRun =
+    wasRunning &&
+    readBrowserStorage("session", ACTIVE_RUN_OWNER_KEY) ===
+      `${detail.id}:${detail.snapshot.activeRunThreadId}`;
+  if (ownedRun) removeBrowserStorage("session", ACTIVE_RUN_OWNER_KEY);
+  const restored = restoreConversationSnapshot(
+    detail.snapshot,
+    detail.status === "needs_retry" || wasRunning,
+  );
+  // 读取另一标签页的运行快照只能展示，不能把共享记录改成已中断。
+  restoringSnapshot = true;
+  try {
+    useStore.setState({
+      ...restored,
+      conversationId: detail.id,
+      conversationStatus: wasRunning ? "needs_retry" : detail.status,
+      remoteRunning: wasRunning && !ownedRun,
+      threadId: restored.activeRunThreadId ?? undefined,
+      ongoingResearchId: null,
+      responding: false,
+    });
+  } finally {
+    restoringSnapshot = false;
+  }
+  setEnableWebSearch(restored.researchMode !== "local");
+}
+
+async function loadConversation(id: string) {
+  const detail = await getConversation(id);
+  knownVersions.set(id, detail.updated_at);
+  return detail;
+}
+
+export function initializeConversationHistory(): Promise<void> {
+  if (historyInitialization) return historyInitialization;
+  historyInitialization = (async () => {
+    try {
+      const conversations = await listConversations();
+      conversations.forEach((item) =>
+        knownVersions.set(item.id, item.updated_at),
+      );
+      const savedId = readBrowserStorage("local", ACTIVE_CONVERSATION_KEY);
+      const activeId = savedId ?? conversations[0]?.id;
+      if (activeId && conversations.some((item) => item.id === activeId)) {
+        const detail = await loadConversation(activeId);
+        restoreConversation(detail);
+        writeBrowserStorage("local", ACTIVE_CONVERSATION_KEY, activeId);
+      }
+      useStore.setState({
+        conversations,
+        historyLoading: false,
+        historyError: null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "加载会话失败";
+      useStore.setState({ historyLoading: false, historyError: message });
+    } finally {
+      historyReady = true;
+      // 只观察需要入库的字段，避免更新历史列表后再次触发保存。
+      useStore.subscribe((state, previous) => {
+        if (
+          state.messageIds !== previous.messageIds ||
+          state.messages !== previous.messages ||
+          state.researchIds !== previous.researchIds ||
+          state.researchPlanIds !== previous.researchPlanIds ||
+          state.researchReportIds !== previous.researchReportIds ||
+          state.researchActivityIds !== previous.researchActivityIds ||
+          state.researchQueries !== previous.researchQueries ||
+          state.researchCitations !== previous.researchCitations ||
+          state.openResearchId !== previous.openResearchId ||
+          state.activeRunThreadId !== previous.activeRunThreadId ||
+          state.selectedResources !== previous.selectedResources ||
+          state.researchMode !== previous.researchMode ||
+          state.conversationStatus !== previous.conversationStatus
+        ) {
+          scheduleConversationSave();
+        }
+      });
+    }
+  })();
+  return historyInitialization;
+}
+
+export async function refreshConversations(): Promise<void> {
+  await switchConversation(async () => {
+    const conversations = await listConversations();
+    conversations.forEach((item) => {
+      if (!knownVersions.has(item.id)) {
+        knownVersions.set(item.id, item.updated_at);
+      }
+    });
+    const current = useStore.getState();
+    const active = conversations.find(
+      (item) => item.id === current.conversationId,
+    );
+    if (current.remoteRunning && active && active.status !== "running") {
+      // 另一个标签页结束后，刷新按钮也要解除本页只读状态。
+      restoreConversation(await loadConversation(current.conversationId));
+    }
+    useStore.setState({ conversations, historyError: null });
+  });
+}
+
+export async function recoverStoppedConversation(): Promise<void> {
+  await switchConversation(async () => {
+    const current = useStore.getState();
+    if (!current.remoteRunning) return;
+    const latest = await getConversation(current.conversationId);
+    knownVersions.set(latest.id, latest.updated_at);
+    const recovered =
+      latest.status === "running"
+        ? await saveConversationAPI(
+            latest.id,
+            latest.title,
+            "needs_retry",
+            latest.snapshot,
+            latest.updated_at,
+          )
+        : latest;
+    knownVersions.set(recovered.id, recovered.updated_at);
+    restoreConversation(recovered);
+    upsertConversation(recovered);
+  });
+}
+
+async function switchConversation(action: () => Promise<void>): Promise<void> {
+  const state = useStore.getState();
+  if (state.responding || state.sendStarting || state.conversationSwitching)
+    return;
+  // 异步保存或读取期间阻止新请求，避免旧响应覆盖新会话。
+  useStore.setState({ conversationSwitching: true });
+  try {
+    await action();
+  } finally {
+    useStore.setState({ conversationSwitching: false });
+  }
+}
+
+export async function createConversation(): Promise<void> {
+  await switchConversation(async () => {
+    await flushConversation();
+    const id = nanoid();
+    useStore.setState(emptyConversation(id));
+    writeBrowserStorage("local", ACTIVE_CONVERSATION_KEY, id);
+    setEnableWebSearch(true);
+  });
+}
+
+export async function openConversation(id: string): Promise<void> {
+  if (
+    useStore.getState().conversationId === id &&
+    !useStore.getState().remoteRunning
+  ) {
+    return;
+  }
+  await switchConversation(async () => {
+    await flushConversation();
+    const detail = await loadConversation(id);
+    restoreConversation(detail);
+    writeBrowserStorage("local", ACTIVE_CONVERSATION_KEY, id);
+  });
+}
+
+export async function removeConversation(id: string): Promise<void> {
+  await switchConversation(async () => {
+    const currentId = useStore.getState().conversationId;
+    await flushConversation();
+    await deleteConversationAPI(id, knownVersions.get(id));
+    knownVersions.delete(id);
+    useStore.setState((state) => ({
+      conversations: state.conversations.filter((item) => item.id !== id),
+    }));
+    if (currentId === id) {
+      const nextId = nanoid();
+      useStore.setState(emptyConversation(nextId));
+      writeBrowserStorage("local", ACTIVE_CONVERSATION_KEY, nextId);
+      setEnableWebSearch(true);
+    }
+  });
+}
 
 export async function sendMessage(
   content?: string,
@@ -101,31 +482,130 @@ export async function sendMessage(
   } = {},
   options: { abortSignal?: AbortSignal } = {},
 ) {
+  if (
+    useStore.getState().sendStarting ||
+    useStore.getState().responding ||
+    useStore.getState().conversationSwitching
+  ) {
+    return;
+  }
+  useStore.setState({ sendStarting: true });
+  try {
+    await initializeConversationHistory();
+  } finally {
+    useStore.setState({ sendStarting: false });
+  }
+  const current = useStore.getState();
+  if (current.responding || current.conversationSwitching) return;
+  if (current.remoteRunning) {
+    toast("此会话仍在其他标签页运行，请稍后刷新历史记录。");
+    return;
+  }
+  if (interruptFeedback && current.conversationStatus === "needs_retry") {
+    toast("上次研究已中断，请重新提问。");
+    return;
+  }
+
+  const selection = resolveResearchSelection(
+    current.researchMode,
+    current.selectedResources,
+    resources,
+  );
+  if (!selection.valid) {
+    toast("请先选择至少一份资料再提问。");
+    return;
+  }
+
+  const conversationId = current.conversationId;
+  // 每轮新研究使用新运行 ID；计划审核反馈沿用该轮 ID 才能恢复中断点。
+  const runThreadId = interruptFeedback ? current.activeRunThreadId : nanoid();
+  if (!runThreadId) {
+    toast("研究状态已失效，请重新提问。");
+    return;
+  }
+  const history = interruptFeedback
+    ? undefined
+    : boundedConversationHistory(current);
+  writeBrowserStorage(
+    "session",
+    ACTIVE_RUN_OWNER_KEY,
+    `${conversationId}:${runThreadId}`,
+  );
+  useStore.setState({
+    activeRunThreadId: runThreadId,
+    threadId: runThreadId,
+    conversationStatus: "running",
+  });
+
   if (content != null) {
     appendMessage({
       id: nanoid(),
-      threadId: THREAD_ID,
+      threadId: runThreadId,
       role: "user",
       content: content,
       contentChunks: [content],
-      resources,
+      resources: selection.resources,
+      interruptFeedback,
     });
+  }
+
+  // 开始模型请求前先抢占会话版本，避免两个标签页在自动保存间隔内同时研究。
+  setResponding(true);
+  try {
+    const replayParams = new URLSearchParams(location.search);
+    if (
+      !env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY &&
+      !replayParams.has("mock") &&
+      !replayParams.has("replay")
+    ) {
+      await flushConversation();
+    }
+  } catch (error) {
+    if (
+      readBrowserStorage("session", ACTIVE_RUN_OWNER_KEY) ===
+      `${conversationId}:${runThreadId}`
+    ) {
+      removeBrowserStorage("session", ACTIVE_RUN_OWNER_KEY);
+    }
+    const latest = useStore.getState();
+    const messages = new Map(latest.messages);
+    for (const [id, message] of messages) {
+      if (message.threadId === runThreadId) {
+        messages.set(id, { ...message, historyIncomplete: true });
+      }
+    }
+    // 失败的提问仍留在页面供复制；不会被带入下一轮追问。
+    restoringSnapshot = true;
+    try {
+      useStore.setState({
+        messages,
+        conversationStatus: "needs_retry",
+        responding: false,
+      });
+    } finally {
+      restoringSnapshot = false;
+    }
+    toast.error(
+      error instanceof Error ? error.message : "保存会话失败，请刷新后重试。",
+    );
+    return;
   }
 
   const settings = getChatStreamSettings();
   const stream = chatStream(
     content ?? "[REPLAY]",
     {
-      thread_id: THREAD_ID,
+      thread_id: runThreadId,
+      history,
       interrupt_feedback: interruptFeedback,
-      resources,
+      resources: selection.resources,
       auto_accepted_plan: settings.autoAcceptedPlan,
       enable_clarification: settings.enableClarification ?? false,
       max_clarification_rounds: settings.maxClarificationRounds ?? 3,
       enable_deep_thinking: settings.enableDeepThinking ?? false,
       enable_background_investigation:
         settings.enableBackgroundInvestigation ?? true,
-      enable_web_search: settings.enableWebSearch ?? true,
+      enable_web_search: selection.enableWebSearch,
       max_plan_iterations: settings.maxPlanIterations,
       max_step_num: settings.maxStepNum,
       max_search_results: settings.maxSearchResults,
@@ -135,8 +615,9 @@ export async function sendMessage(
     options,
   );
 
-  setResponding(true);
   let messageId: string | undefined;
+  let sawInterrupt = false;
+  let hadError = false;
   const pendingUpdates = new Map<string, Message>();
   let updateTimer: NodeJS.Timeout | undefined;
 
@@ -157,12 +638,16 @@ export async function sendMessage(
       let message: Message | undefined;
 
       if (type === "error") {
+        hadError = true;
         // Server sent an error event - check if it's user cancellation
         if (data.reason !== "cancelled") {
-          toast(data.error || "An error occurred while generating the response.");
+          toast(
+            data.error || "An error occurred while generating the response.",
+          );
         }
         break;
       }
+      if (type === "interrupt") sawInterrupt = true;
       // Handle citations event: store citations for the current research
       if (type === "citations") {
         const ongoingResearchId = useStore.getState().ongoingResearchId;
@@ -171,7 +656,7 @@ export async function sendMessage(
         }
         continue;
       }
-      
+
       // Handle tool_call_result specially: use the message that contains the tool call
       if (type === "tool_call_result") {
         message = findMessageByToolCallId(data.tool_call_id);
@@ -181,14 +666,16 @@ export async function sendMessage(
         } else {
           // Shouldn't happen, but handle gracefully
           if (process.env.NODE_ENV === "development") {
-            console.warn(`Tool call result without matching message: ${data.tool_call_id}`);
+            console.warn(
+              `Tool call result without matching message: ${data.tool_call_id}`,
+            );
           }
           continue; // Skip this event
         }
       } else {
         // For other event types, use data.id
         messageId = data.id;
-        
+
         if (!existsMessage(messageId)) {
           message = {
             id: messageId,
@@ -205,7 +692,7 @@ export async function sendMessage(
           appendMessage(message);
         }
       }
-      
+
       message ??= getMessage(messageId);
       if (message) {
         message = mergeMessage(message, event);
@@ -215,9 +702,12 @@ export async function sendMessage(
       }
     }
   } catch (error) {
+    hadError = true;
     const isAborted = (error as Error).name === "AbortError";
     if (!isAborted) {
-      toast("An error occurred while generating the response. Please try again.");
+      toast(
+        "An error occurred while generating the response. Please try again.",
+      );
     }
     // Update message status.
     if (messageId != null) {
@@ -229,13 +719,53 @@ export async function sendMessage(
     }
     useStore.getState().setOngoingResearch(null);
   } finally {
+    if (
+      readBrowserStorage("session", ACTIVE_RUN_OWNER_KEY) ===
+      `${conversationId}:${runThreadId}`
+    ) {
+      removeBrowserStorage("session", ACTIVE_RUN_OWNER_KEY);
+    }
     setResponding(false);
     // Ensure all pending updates are processed.
     if (updateTimer) clearTimeout(updateTimer);
     if (pendingUpdates.size > 0) {
       useStore.getState().updateMessages(Array.from(pendingUpdates.values()));
     }
-
+    if (useStore.getState().conversationId === conversationId) {
+      const currentMessages = useStore.getState().messages;
+      const status = completedRunStatus(
+        currentMessages,
+        runThreadId,
+        hadError,
+        sawInterrupt,
+      );
+      const unfinished = [...currentMessages.values()]
+        .filter(
+          (message) =>
+            message.threadId === runThreadId &&
+            (Boolean(message.isStreaming) ||
+              (status === "needs_retry" &&
+                message.role === "assistant" &&
+                message.finishReason !== "stop")),
+        )
+        .map((message) => ({
+          ...message,
+          isStreaming: false,
+          historyIncomplete: true,
+        }));
+      if (unfinished.length > 0) {
+        useStore.getState().updateMessages(unfinished);
+      }
+      useStore.setState({
+        conversationStatus: status,
+        ongoingResearchId: null,
+      });
+      try {
+        await flushConversation();
+      } catch (error) {
+        console.error("Failed to save conversation:", error);
+      }
+    }
   }
 }
 
@@ -277,17 +807,6 @@ function appendMessage(message: Message) {
     appendResearchActivity(message);
   }
   useStore.getState().appendMessage(message);
-}
-
-function updateMessage(message: Message) {
-  if (
-    getOngoingResearchId() &&
-    message.agent === "reporter" &&
-    !message.isStreaming
-  ) {
-    useStore.getState().setOngoingResearch(null);
-  }
-  useStore.getState().updateMessage(message);
 }
 
 function getOngoingResearchId() {
@@ -372,7 +891,9 @@ export async function listenToPodcast(researchId: string) {
     if (reportMessage?.content) {
       appendMessage({
         id: nanoid(),
-        threadId: THREAD_ID,
+        threadId:
+          useStore.getState().activeRunThreadId ??
+          useStore.getState().conversationId,
         role: "user",
         content: "Please generate a podcast for the above research.",
         contentChunks: [],
@@ -381,7 +902,9 @@ export async function listenToPodcast(researchId: string) {
       const podcastObject = { title, researchId };
       const podcastMessage: Message = {
         id: podCastMessageId,
-        threadId: THREAD_ID,
+        threadId:
+          useStore.getState().activeRunThreadId ??
+          useStore.getState().conversationId,
         role: "assistant",
         agent: "podcast",
         content: JSON.stringify(podcastObject),
@@ -526,7 +1049,7 @@ export function useToolCalls() {
 export function useCitations(researchId: string | null | undefined) {
   return useStore(
     useShallow((state) =>
-      researchId ? state.researchCitations.get(researchId) ?? [] : []
+      researchId ? (state.researchCitations.get(researchId) ?? []) : [],
     ),
   );
 }
