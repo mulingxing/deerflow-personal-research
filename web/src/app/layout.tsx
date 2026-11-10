@@ -59,8 +59,10 @@ export default async function RootLayout({
       </head>
       <body className="bg-app">
         <NextIntlClientProvider messages={messages}>
-          <ThemeProviderWrapper>{children}</ThemeProviderWrapper>
-          <Toaster />
+          <ThemeProviderWrapper>
+            {children}
+            <Toaster />
+          </ThemeProviderWrapper>
         </NextIntlClientProvider>
         {
           // NO USER BEHAVIOR TRACKING OR PRIVATE DATA COLLECTION BY DEFAULT

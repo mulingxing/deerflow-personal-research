@@ -15,6 +15,10 @@ Preview of a presentation theme added in this version:
 
 ![Midnight presentation theme preview](web/public/ppt-themes/midnight.png)
 
+### Demo of this adaptation
+
+[Watch or download the project demo (MP4)](docs/videos/deerflow-demo.mp4). It shows local document upload and research, report sources, conversation history, and PPTX export in this repository's light interface.
+
 This adaptation is intended for **local, single-user use**. Its history API does not authenticate users; do not expose it to an untrusted network. A cloud LLM still receives selected document excerpts when answering document questions. The PPTX export renders slide pages as images, so individual text boxes are generally not editable.
 
 ### Reproduce this version

@@ -14,13 +14,14 @@ export function ThemeProviderWrapper({
 }) {
   const pathname = usePathname();
   const isChatPage = pathname?.startsWith("/chat");
+  const isPPTPage = pathname?.startsWith("/ppt");
 
   return (
     <ThemeProvider
       attribute="class"
       defaultTheme={"dark"}
       enableSystem={isChatPage}
-      forcedTheme={isChatPage ? undefined : "dark"}
+      forcedTheme={isChatPage || isPPTPage ? undefined : "dark"}
       disableTransitionOnChange
     >
       {children}
